@@ -48,14 +48,41 @@ class RaftClient(cmd.Cmd):
     def do_transfer(self, arg):
         'Initiate a transfer transaction: transfer'
         print("\nInitiating transfer transaction...")
-        response = self.contact_nodes('TransactionRequest', {
-            'type': 'transfer',
-            'amount': 100
-        })
-        if response:
-            print(f"Transaction status: {response.get('status', 'unknown')}")
-        else:
-            print("No response received from coordinator")
+        
+        tried_nodes = set()
+        while True:
+            for node_name, node_info in NODES.items():
+                if node_name in tried_nodes:
+                    continue
+                    
+                response = self.send_rpc(
+                    node_info['ip'],
+                    node_info['port'],
+                    'TransactionRequest',
+                    {'type': 'transfer', 'amount': 100}
+                )
+                
+                if response:
+                    if response.get('redirect'):
+                        tried_nodes.add(node_name)
+                        print(f"Redirecting to coordinator...")
+                        continue
+                        
+                    if response.get('success'):
+                        print(f"Transaction completed successfully!")
+                        print(f"Status: {response.get('status')}")
+                        if response.get('message'):
+                            print(f"Message: {response.get('message')}")
+                        return
+                    else:
+                        print(f"Transaction failed: {response.get('error', 'Unknown error')}")
+                        return
+                
+                tried_nodes.add(node_name)
+                
+            if len(tried_nodes) == len(NODES):
+                print("Unable to complete transaction. No nodes available.")
+                return
 
     def do_bonus(self, arg):
         'Initiate a bonus transaction: bonus'
