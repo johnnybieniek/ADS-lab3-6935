@@ -77,6 +77,7 @@ class Node:
 
         self.is_coordinator = (name == 'node1')  # Node1 is coordinator
         self.account_file = None
+
         if name == 'node2':
             self.account_file = 'account_A.txt'
             self.account_name = 'A'
@@ -96,25 +97,29 @@ class Node:
         
         # Initialize account if this node manages one
         if self.account_file:
-            self.initialize_account()
+            self.initialize_account(scenario)
 
 
 
     def initialize_account(self, scenario='A'):
         """Initialize account file with balance based on scenario"""
         scenarios = {
-            'A': {'A': 200, 'B': 300},
-            'B': {'A': 90, 'B': 50},
-            'C': {'A': 200, 'B': 300}  
+            'A': {'A': 200.0, 'B': 300.0},
+            'B': {'A': 90.0, 'B': 50.0},
+            'C': {'A': 200.0, 'B': 300.0}
         }
-        print(f"[{self.name}] Initializing account file with balance: {scenarios[scenario][self.account_name]}")
+        print(f"[{self.name}] Scenarios: {scenarios}, in the initialize_account function")
+        if not self.account_file or not self.account_name:
+            return
+            
+        initial_balance = scenarios[scenario][self.account_name]
+        print(f"[{self.name}] Initializing account {self.account_name} with balance: {initial_balance}")
+        
         try:
-            with open(self.account_file, 'r') as f:
-                pass
-        except FileNotFoundError:
-            initial_balance = scenarios[scenario][self.account_name]
             with open(self.account_file, 'w') as f:
                 f.write(str(initial_balance))
+        except Exception as e:
+            print(f"[{self.name}] Error writing to account file: {str(e)}")
 
     def get_balance(self):
         """Get current account balance"""
@@ -237,18 +242,66 @@ class Node:
 
     def handle_setup_scenario(self, data):
         """Handle scenario setup request"""
-        scenario = data.get('scenario')
-        failure_mode = data.get('failure_mode')
-        
-        self.scenario = scenario
-        self.failure_mode = failure_mode
-        self.has_failed = False
-        print(f"[{self.name}] Scenario: {scenario}, Failure mode: {failure_mode}")
-        # Reset account files
-        if self.account_file:
-            self.initialize_account(scenario)
+        try:
+            scenario = data.get('scenario')
+            failure_mode = data.get('failure_mode', None)
             
-        return {'success': True}
+            print(f"[{self.name}] Setting up scenario {scenario} with failure mode: {failure_mode}")
+            
+            if scenario not in ['A', 'B', 'C']:
+                print(f"[{self.name}] Invalid scenario: {scenario}")
+                return {'success': False, 'error': 'Invalid scenario'}
+
+            # Define scenario balances
+            scenarios = {
+                'A': {'A': 200.0, 'B': 300.0},
+                'B': {'A': 90.0, 'B': 50.0},
+                'C': {'A': 200.0, 'B': 300.0}
+            }
+
+            # Update state
+            self.scenario = scenario
+            self.failure_mode = failure_mode
+            self.has_failed = False
+
+            # If this is the coordinator (node1), send setup to other nodes first
+            if self.is_coordinator:
+                print(f"[{self.name}] Coordinator sending setup to other nodes")
+                
+                # Send to node2 (Account A)
+                response_A = self.send_rpc(
+                    NODES['node2']['ip'],
+                    NODES['node2']['port'],
+                    'SetupScenario',
+                    data
+                )
+                
+                # Send to node3 (Account B)
+                response_B = self.send_rpc(
+                    NODES['node3']['ip'],
+                    NODES['node3']['port'],
+                    'SetupScenario',
+                    data
+                )
+                
+                if not response_A or not response_B:
+                    return {'success': False, 'error': 'Failed to setup all nodes'}
+            
+            # Directly update balance if this node manages an account
+            if self.account_name:
+                new_balance = scenarios[scenario][self.account_name]
+                success = self.update_balance(new_balance)
+                if success:
+                    print(f"[{self.name}] Successfully updated balance to {new_balance}")
+                else:
+                    print(f"[{self.name}] Failed to update balance")
+                    return {'success': False, 'error': 'Failed to update balance'}
+            
+            return {'success': True}
+                
+        except Exception as e:
+            print(f"[{self.name}] Error in setup: {str(e)}")
+            return {'success': False, 'error': str(e)}
     """
     The main function to start the node. It creates a server thread and starts the election process.
     It also handles the heartbeats and appends new entries to the log.
@@ -321,6 +374,7 @@ class Node:
                         response = self.handle_append_entries(request['data'])
                     # Add new 2PC RPC handlers
                     elif rpc_type == 'SetupScenario':  # Add this line
+                        print(f"[{self.name}] Handling setup scenario request")
                         response = self.handle_setup_scenario(request['data'])  # Add this line
                     elif rpc_type == 'Prepare':
                         response = self.handle_prepare(request['data'])

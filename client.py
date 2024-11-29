@@ -24,26 +24,6 @@ class RaftClient(cmd.Cmd):
     intro = 'Welcome to the Raft cluster client. Type help or ? to list commands.\n'
     prompt = '(raft) '
 
-    def do_scenario(self, arg):
-        'Set up a specific test scenario: scenario <A|B|C> [failure_mode]'
-        args = arg.split()
-        if len(args) < 1:
-            print("Error: Scenario required")
-            print("Usage: scenario <A|B|C> [failure_mode]")
-            return
-            
-        scenario = args[0].upper()
-        failure_mode = args[1] if len(args) > 1 else None
-        
-        if scenario not in ['A', 'B', 'C']:
-            print("Invalid scenario. Choose A, B, or C")
-            return
-            
-        # Send scenario setup to all nodes
-        self.contact_nodes('SetupScenario', {
-            'scenario': scenario,
-            'failure_mode': failure_mode
-        })
 
     def do_transfer(self, arg):
         'Initiate a transfer transaction: transfer'
@@ -98,7 +78,7 @@ class RaftClient(cmd.Cmd):
             print("Error: Scenario required (A, B, or C)")
             return
             
-        scenario = args[0].upper()
+        scenario = args[0].upper()  # Make sure it's uppercase
         failure_mode = args[1] if len(args) > 1 else None
         
         if scenario not in ['A', 'B', 'C']:
