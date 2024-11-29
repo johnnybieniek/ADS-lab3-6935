@@ -465,16 +465,17 @@ class Node:
     def handle_prepare(self, data):
         """
         Handle prepare request from coordinator for 2PC protocol.
-        Validates transaction feasibility and prepares node state.
-        
-        Args:
-            data (dict): Contains transaction_id and transaction details
-            
-        Returns:
-            dict: Response indicating readiness or abort with appropriate status
+        Includes failure simulation for testing scenarios.
         """
         try:
-            # Verify node role
+            # First, check if we should simulate failure BEFORE prepare
+            if self.failure_mode == 'before_prepare' and not self.has_failed:
+                print(f"[{self.name}] Simulating failure before prepare...")
+                self.has_failed = True
+                self.simulate_failure()
+                return None  # Return None to simulate no response due to crash
+                
+            # Normal prepare handling continues if no failure...
             if self.is_coordinator:
                 print(f"[{self.name}] Error: Coordinator cannot handle prepare phase")
                 return {
@@ -482,34 +483,16 @@ class Node:
                     'error': 'Coordinator cannot handle prepare phase'
                 }
 
-            # Extract and validate transaction information
             transaction_id = data.get('transaction_id')
             transaction = data.get('transaction')
-            
-            if not transaction_id or not transaction:
-                print(f"[{self.name}] Error: Invalid transaction data")
-                return {
-                    'success': False,
-                    'error': 'Invalid transaction data'
-                }
 
             print(f"\n[{self.name}] Received PREPARE for transaction {transaction_id}")
-            
-            # Get current account state
             current_balance = self.get_balance()
-            if current_balance is None:
-                print(f"[{self.name}] Error: Could not read account balance")
-                return {
-                    'success': False,
-                    'error': 'Could not read account balance'
-                }
-                
             print(f"[{self.name}] Current balance: {current_balance}")
 
-            # Handle different transaction types
+            # Transaction validation based on type
             transaction_type = transaction.get('type')
             can_process = False
-            bonus_amount = 0
 
             if transaction_type == 'transfer':
                 if self.account_name == 'A':
@@ -518,7 +501,7 @@ class Node:
                 else:  # Account B
                     can_process = True
                     print(f"[{self.name}] Transfer validation: Can receive")
-                    
+
             elif transaction_type == 'bonus':
                 can_process = True
                 if self.account_name == 'A':
@@ -527,70 +510,57 @@ class Node:
                 else:  # Account B
                     bonus_amount = transaction.get('bonus_amount', 0)
                     print(f"[{self.name}] Will receive bonus: {bonus_amount}")
-            else:
-                print(f"[{self.name}] Error: Invalid transaction type {transaction_type}")
-                return {
-                    'success': False,
-                    'error': 'Invalid transaction type'
-                }
 
-            # If transaction is possible, update state and prepare response
             if can_process:
-                # Update transaction state
                 self.transaction_state.update({
                     'status': 'prepared',
                     'transaction_id': transaction_id,
                     'current_transaction': transaction,
                     'prepare_timestamp': time.time()
                 })
-                
-                # For bonus transactions, store the bonus amount
-                if transaction_type == 'bonus':
-                    self.transaction_state['bonus_amount'] = bonus_amount
-                
+
+                # Check if we should simulate failure AFTER prepare
+                if self.failure_mode == 'after_prepare' and not self.has_failed:
+                    print(f"[{self.name}] Sending READY response before simulated failure")
+                    response = {
+                        'success': True,
+                        'status': 'ready',
+                        'node': self.name,
+                        'transaction_id': transaction_id
+                    }
+                    # Add bonus amount to response if relevant
+                    if transaction_type == 'bonus' and self.account_name == 'A':
+                        response['bonus_amount'] = bonus_amount
+                    
+                    print(f"[{self.name}] Simulating failure after prepare...")
+                    self.simulate_failure()
+                    return response
+
                 print(f"[{self.name}] Sending READY response")
-                response = {
+                return {
                     'success': True,
                     'status': 'ready',
                     'node': self.name,
-                    'transaction_id': transaction_id
-                }
-                
-                # Include bonus amount in response if this is node A in a bonus transaction
-                if transaction_type == 'bonus' and self.account_name == 'A':
-                    response['bonus_amount'] = bonus_amount
-                
-                return response
-                
-            else:
-                # If transaction is not possible, prepare abort response
-                self.transaction_state.update({
-                    'status': 'aborted',
                     'transaction_id': transaction_id,
-                    'abort_reason': 'Transaction validation failed'
-                })
-                
+                    'bonus_amount': bonus_amount if transaction_type == 'bonus' and self.account_name == 'A' else None
+                }
+            else:
                 print(f"[{self.name}] Sending ABORT response")
                 return {
                     'success': False,
                     'status': 'abort',
                     'node': self.name,
                     'transaction_id': transaction_id,
-                    'reason': 'Insufficient funds or invalid transaction'
+                    'reason': 'Transaction validation failed'
                 }
 
         except Exception as e:
             print(f"[{self.name}] Error in prepare phase: {str(e)}")
-            # Reset transaction state on error
-            self.transaction_state = {
-                'status': None,
-                'transaction_id': None,
-                'current_transaction': None
-            }
             return {
                 'success': False,
                 'error': f'Internal error during prepare phase: {str(e)}'
             }
+    
 
     def handle_commit(self, data):
         """
