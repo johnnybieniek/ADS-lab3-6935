@@ -1,7 +1,7 @@
 import socket
 import json
 import cmd
-
+import time
 
 # Hardcoding the nodes IP addresses and ports for ease of use
 # NODES = {
@@ -30,7 +30,10 @@ class RaftClient(cmd.Cmd):
         print("\nInitiating transfer transaction...")
         
         tried_nodes = set()
-        while True:
+        retries = 0
+        max_retries = 3  # Add retry limit for coordinator failure
+        
+        while retries < max_retries:
             for node_name, node_info in NODES.items():
                 if node_name in tried_nodes:
                     continue
@@ -39,7 +42,8 @@ class RaftClient(cmd.Cmd):
                     node_info['ip'],
                     node_info['port'],
                     'TransactionRequest',
-                    {'type': 'transfer', 'amount': 100}
+                    {'type': 'transfer', 'amount': 100},
+                    #timeout=5  # Increased timeout for failure scenarios
                 )
                 
                 if response:
@@ -57,12 +61,17 @@ class RaftClient(cmd.Cmd):
                     else:
                         print(f"Transaction failed: {response.get('error', 'Unknown error')}")
                         return
-                
-                tried_nodes.add(node_name)
-                
+                else:
+                    print(f"No response from {node_name} - possible coordinator failure")
+                    tried_nodes.add(node_name)
+            
+            retries += 1
             if len(tried_nodes) == len(NODES):
-                print("Unable to complete transaction. No nodes available.")
-                return
+                time.sleep(2)  # Wait before retry
+                tried_nodes.clear()
+                print("Retrying transaction...")
+        
+        print("Transaction failed after maximum retries - coordinator may have crashed")
 
     def do_bonus(self, arg):
         'Initiate a bonus transaction: bonus'
@@ -83,6 +92,12 @@ class RaftClient(cmd.Cmd):
         
         if scenario not in ['A', 'B', 'C']:
             print("Invalid scenario. Choose A, B, or C")
+            return
+        
+        # Validate failure modes
+        valid_failure_modes = ['before_prepare', 'after_prepare', 'coordinator_after_prepare']
+        if failure_mode and failure_mode not in valid_failure_modes:
+            print(f"Invalid failure mode. Choose from: {', '.join(valid_failure_modes)}")
             return
             
         print(f"Setting up scenario {scenario}" + 

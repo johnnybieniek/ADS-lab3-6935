@@ -5,6 +5,9 @@ import time
 import json
 import sys
 import random
+import os
+
+
 
 # Hardcoding the nodes IP addresses and ports for ease of use
 # NODES = {
@@ -108,7 +111,7 @@ class Node:
             'B': {'A': 90.0, 'B': 50.0},
             'C': {'A': 200.0, 'B': 300.0}
         }
-        print(f"[{self.name}] Scenarios: {scenarios}, in the initialize_account function")
+       
         if not self.account_file or not self.account_name:
             return
             
@@ -429,8 +432,23 @@ class Node:
             'status': 'preparing',
             'current_transaction': data,
             'participants_ready': set(),
+            'start_time': time.time()  # Track transaction start time
         })
-        
+
+        # Simulate coordinator failure after prepare if configured
+        if self.failure_mode == 'coordinator_after_prepare' and not self.has_failed:
+            print(f"[{self.name}] COORDINATOR: Sending PREPARE to all participants")
+            prepare_success = self.send_prepare_to_participants(transaction_id, data)
+            
+            if prepare_success:
+                print(f"[{self.name}] COORDINATOR: All participants ready")
+                print(f"[{self.name}] COORDINATOR: Simulating coordinator failure...")
+                self.has_failed = True
+                self.simulate_failure()
+                # Save transaction state for recovery
+                self.save_transaction_state()
+                return None
+
         print(f"[{self.name}] COORDINATOR: Sending PREPARE to all participants")
         prepare_success = self.send_prepare_to_participants(transaction_id, data)
         
@@ -438,24 +456,23 @@ class Node:
             print(f"[{self.name}] COORDINATOR: All participants ready, initiating COMMIT")
             commit_success = self.send_commit_to_participants(transaction_id)
             if commit_success:
-                print(f"[{self.name}] COORDINATOR: Transaction completed successfully")
+                print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
+                self.transaction_state['status'] = 'committed'
                 return {
                     'success': True,
-                    'status': 'committed',
-                    'transaction_id': transaction_id,
-                    'message': 'Transaction completed successfully'
+                    'status': 'committed'
                 }
             else:
-                print(f"[{self.name}] COORDINATOR: Commit failed, initiating ABORT")
-                self.send_abort_to_participants(transaction_id)
+                print(f"[{self.name}] COORDINATOR: Commit failed")
+                self.transaction_state['status'] = 'failed'
                 return {
                     'success': False,
-                    'status': 'aborted',
                     'error': 'Commit failed'
                 }
         else:
             print(f"[{self.name}] COORDINATOR: Prepare failed, initiating ABORT")
             self.send_abort_to_participants(transaction_id)
+            self.transaction_state['status'] = 'aborted'
             return {
                 'success': False,
                 'status': 'aborted',
@@ -1060,6 +1077,31 @@ class Node:
             return None
         except Exception as e: 
             return None
+
+    def save_transaction_state(self):
+        """Save transaction state for recovery"""
+        state_file = f"transaction_state_{self.name}.json"
+        with open(state_file, 'w') as f:
+            json.dump(self.transaction_state, f)
+
+    def recover_transaction_state(self):
+        """Recover transaction state after failure"""
+        state_file = f"transaction_state_{self.name}.json"
+        if os.path.exists(state_file):
+            with open(state_file, 'r') as f:
+                self.transaction_state = json.load(f)
+            
+            # Check if transaction timed out during failure
+            if time.time() - self.transaction_state['start_time'] > 30:  # 30 sec timeout
+                self.send_abort_to_participants(self.transaction_state['transaction_id'])
+                self.transaction_state['status'] = 'aborted'
+            else:
+                # Resume transaction from saved state
+                if self.transaction_state['status'] == 'preparing':
+                    if len(self.transaction_state['participants_ready']) == len(NODES) - 1:
+                        self.send_commit_to_participants(self.transaction_state['transaction_id'])
+                    else:
+                        self.send_abort_to_participants(self.transaction_state['transaction_id'])
 
 
 """
