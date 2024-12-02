@@ -31,7 +31,7 @@ class RaftClient(cmd.Cmd):
         
         tried_nodes = set()
         retries = 0
-        max_retries = 3  # Add retry limit for coordinator failure
+        max_retries = 3
         
         while retries < max_retries:
             for node_name, node_info in NODES.items():
@@ -43,8 +43,13 @@ class RaftClient(cmd.Cmd):
                     node_info['port'],
                     'TransactionRequest',
                     {'type': 'transfer', 'amount': 100},
-                    #timeout=5  # Increased timeout for failure scenarios
+                    timeout=5
                 )
+                
+                if response and response.get('error') == 'Node in failed state':
+                    print(f"Node {node_name} is in failed state")
+                    tried_nodes.add(node_name)
+                    continue
                 
                 if response:
                     if response.get('redirect'):
@@ -67,9 +72,10 @@ class RaftClient(cmd.Cmd):
             
             retries += 1
             if len(tried_nodes) == len(NODES):
-                time.sleep(2)  # Wait before retry
+                time.sleep(retries * 2)  # Exponential backoff
+                if retries < max_retries:
+                    print(f"All nodes tried, waiting before retry {retries}/{max_retries}...")
                 tried_nodes.clear()
-                print("Retrying transaction...")
         
         print("Transaction failed after maximum retries - coordinator may have crashed")
 
@@ -111,15 +117,18 @@ class RaftClient(cmd.Cmd):
     """
     This function sends a RPC request to a specific node.
     """
-    def send_rpc(self, ip, port, rpc_type, data):
+    def send_rpc(self, ip, port, rpc_type, data, timeout=5):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(3)
+                s.settimeout(timeout)
                 s.connect((ip, port))
                 message = json.dumps({'rpc_type': rpc_type, 'data': data})
                 s.sendall(message.encode())
                 response = s.recv(4096).decode()
                 return json.loads(response)
+        except socket.timeout:
+            print(f"Timeout communicating with node {ip}:{port}")
+            return None
         except Exception as e:
             print(f"Error communicating with node {ip}:{port}: {str(e)}")
             return None

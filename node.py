@@ -132,11 +132,10 @@ class Node:
             return float(f.read().strip())
         
     def simulate_failure(self):
-        """Simulate node failure based on failure mode"""
-        if self.failure_mode:
-            print(f"[{self.name}] Simulating failure: {self.failure_mode}")
-            time.sleep(10)  # Simulate crash with sleep
-            self.has_failed = True
+        """Simulate node failure with sleep"""
+        print(f"[{self.name}] Simulating node failure...")
+        time.sleep(10)  # 10 second delay to simulate crash
+        self.has_failed = True
 
     def update_balance(self, new_balance):
         """Update account balance"""
@@ -145,12 +144,6 @@ class Node:
         with open(self.account_file, 'w') as f:
             f.write(str(new_balance))
         return True
-    
-    def simulate_failure(self):
-        """Simulate node failure with sleep"""
-        print(f"[{self.name}] Simulating node failure...")
-        time.sleep(10)  # 10 second delay to simulate crash
-        self.has_failed = True
 
     def send_prepare_to_participants(self, transaction_id, transaction_data):
         """Coordinator sends prepare messages to all participants"""
@@ -405,6 +398,14 @@ class Node:
 
     def handle_transaction_request(self, data):
         """Handle incoming transaction request from client"""
+
+        if self.has_failed:
+            return {
+                'success': False,
+                'error': 'Node in failed state',
+                'status': 'failed'
+            }
+    
         if not self.is_coordinator:
             print(f"[{self.name}] Not coordinator, redirecting to node1")
             return {
