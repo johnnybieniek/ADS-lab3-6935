@@ -459,7 +459,7 @@ class Node:
     def run_server(self):
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.ip, self.port))
+        self.server_socket.bind(('', self.port))
         self.server_socket.listen(5)
         print(f"[{self.name}] Listening for client connections at {self.ip}:{self.port}")
 
