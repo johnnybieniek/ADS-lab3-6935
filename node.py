@@ -48,6 +48,7 @@ class Node:
         self.port = self.node_info['port']
         self.role = self.node_info['role']
         self.cluster = self.node_info.get('cluster')
+        self.running = True
         
         # Replica-specific attributes
         self.is_primary = self.role.startswith('primary')
