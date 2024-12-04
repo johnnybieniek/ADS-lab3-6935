@@ -24,8 +24,8 @@ NODES = {
 }
 
 # For local testing
-LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
-               'cluster': node.get('cluster')} for name, node in NODES.items()}
+#LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
+ #              'cluster': node.get('cluster')} for name, node in NODES.items()}
 
 """
 This code initializes the client class. 
