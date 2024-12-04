@@ -48,7 +48,19 @@ class Node:
         self.port = self.node_info['port']
         self.role = self.node_info['role']
         self.cluster = self.node_info.get('cluster')
+        self.current_term = 0
+        self.voted_for = None
+        self.log = [] 
+        self.commit_index = -1
+        self.last_applied = -1
+        self.next_index = {}
+        self.match_index = {}
+        self.leader_id = None
+        self.election_timer = None
+        self.heartbeat_timer = None
+        self.server_socket = None
         self.running = True
+        self.lock = threading.Lock()
         
         # Replica-specific attributes
         self.is_primary = self.role.startswith('primary')
