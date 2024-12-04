@@ -1140,8 +1140,7 @@ class Node:
     This function sends a RPC to a node. It tries to connect to the node, sends the RPC message,
     and returns the response. If the connection fails, it returns None.
     """
-    def send_rpc(self, ip, port, rpc_type, data, timeout=1.0):
-        """More reliable RPC with shorter timeout"""
+    def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(timeout)
@@ -1150,11 +1149,12 @@ class Node:
                 s.sendall(message.encode())
                 response = s.recv(4096).decode()
                 return json.loads(response)
+
         except socket.timeout:
-            print(f"[{self.name}] Timeout communicating with {ip}:{port}")
+            return None   
+        except ConnectionRefusedError:
             return None
-        except Exception as e:
-            print(f"[{self.name}] Error in RPC: {str(e)}")
+        except Exception as e: 
             return None
 
 
