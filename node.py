@@ -41,16 +41,19 @@ NODES = {
 
 class Node:
     def __init__(self, name, scenario='A', failure_mode=None):
-        # Existing initialization
+        # Basic node info
         self.name = name
         self.node_info = NODES[name]
         self.ip = self.node_info['ip']
         self.port = self.node_info['port']
         self.role = self.node_info['role']
         self.cluster = self.node_info.get('cluster')
+
+        # Raft state
+        self.state = 'Follower'  # Start as follower
         self.current_term = 0
         self.voted_for = None
-        self.log = [] 
+        self.log = []
         self.commit_index = -1
         self.last_applied = -1
         self.next_index = {}
@@ -80,10 +83,12 @@ class Node:
             for node in self.replica_group if node != self.name
         }
 
-        # Existing state initialization
+        # Failure simulation
         self.failure_mode = failure_mode
         self.scenario = scenario
         self.has_failed = False
+        
+        # Log setup
         self.log_filename = f"CISC6935-{self.name}"
         self.is_coordinator = (self.role == 'coordinator')
         
