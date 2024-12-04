@@ -352,6 +352,312 @@ class Node:
 
         return False
     
+    def handle_transaction_request(self, data):
+        """Modified to work with replica system"""
+        if self.has_failed:
+            return {'success': False, 'error': 'Node in failed state'}
+
+        if not self.is_coordinator:
+            return {
+                'success': False,
+                'error': 'Not the coordinator',
+                'redirect': True,
+                'leader_name': 'node1'
+            }
+
+        transaction_id = str(time.time())
+        transaction_type = data.get('type')
+        
+        print(f"\n[{self.name}] COORDINATOR: Starting new transaction")
+        print(f"[{self.name}] COORDINATOR: Transaction ID: {transaction_id}")
+        print(f"[{self.name}] COORDINATOR: Transaction type: {transaction_type}")
+
+        # Get primary nodes for transaction
+        node_a_primary = next(node for node, info in NODES.items() 
+                            if info['role'] == 'primary-a')
+        node_b_primary = next(node for node, info in NODES.items() 
+                            if info['role'] == 'primary-b')
+
+        self.transaction_state.update({
+            'transaction_id': transaction_id,
+            'status': 'preparing',
+            'current_transaction': data,
+            'participants_ready': set(),
+            'start_time': time.time()
+        })
+
+        print(f"[{self.name}] COORDINATOR: Sending PREPARE to primaries")
+        prepare_success = self.send_prepare_to_participants(transaction_id, data)
+        
+        if prepare_success:
+            print(f"[{self.name}] COORDINATOR: All participants ready, initiating COMMIT")
+            commit_success = self.send_commit_to_participants(transaction_id)
+            
+            if commit_success:
+                print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
+                self.transaction_state['status'] = 'committed'
+                return {'success': True, 'status': 'committed'}
+            else:
+                print(f"[{self.name}] COORDINATOR: Commit failed")
+                self.transaction_state['status'] = 'failed'
+                return {'success': False, 'error': 'Commit failed'}
+        else:
+            print(f"[{self.name}] COORDINATOR: Prepare failed, initiating ABORT")
+            self.send_abort_to_participants(transaction_id)
+            self.transaction_state['status'] = 'aborted'
+            return {'success': False, 'status': 'aborted', 'error': 'Prepare failed'}
+
+    def handle_prepare(self, data):
+        """
+        Handle prepare request from coordinator for 2PC protocol.
+        Includes failure simulation for testing scenarios.
+        """
+        try:
+            # First, check if we should simulate failure BEFORE prepare
+            if self.name == 'node2-a1' and self.failure_mode:
+                if self.failure_mode == 'before_prepare' and not self.has_failed:
+                    print(f"[{self.name}] Simulating node2 failure before prepare...")
+                    self.has_failed = True
+                    self.simulate_failure()
+                    return None
+                
+            # Normal prepare handling continues if no failure...
+            if self.is_coordinator:
+                print(f"[{self.name}] Error: Coordinator cannot handle prepare phase")
+                return {
+                    'success': False, 
+                    'error': 'Coordinator cannot handle prepare phase'
+                }
+
+            transaction_id = data.get('transaction_id')
+            transaction = data.get('transaction')
+
+            print(f"\n[{self.name}] Received PREPARE for transaction {transaction_id}")
+            current_balance = self.get_balance()
+            print(f"[{self.name}] Current balance: {current_balance}")
+
+            # Transaction validation based on type
+            transaction_type = transaction.get('type')
+            can_process = False
+
+            if transaction_type == 'transfer':
+                if self.account_name == 'A':
+                    can_process = current_balance >= 100
+                    print(f"[{self.name}] Transfer validation: {'Sufficient' if can_process else 'Insufficient'} funds")
+                else:  # Account B
+                    can_process = True
+                    print(f"[{self.name}] Transfer validation: Can receive")
+
+            elif transaction_type == 'bonus':
+                can_process = True
+                if self.account_name == 'A':
+                    bonus_amount = current_balance * 0.2
+                    print(f"[{self.name}] Calculating bonus: {bonus_amount}")
+                else:  # Account B
+                    bonus_amount = transaction.get('bonus_amount', 0)
+                    print(f"[{self.name}] Will receive bonus: {bonus_amount}")
+
+            if can_process:
+                self.transaction_state.update({
+                    'status': 'prepared',
+                    'transaction_id': transaction_id,
+                    'current_transaction': transaction,
+                    'prepare_timestamp': time.time()
+                })
+
+                # Prepare response before simulating failure
+                response = {
+                    'success': True,
+                    'status': 'ready',
+                    'node': self.name,
+                    'transaction_id': transaction_id,
+                    'bonus_amount': bonus_amount if transaction_type == 'bonus' and self.account_name == 'A' else None
+                }
+
+                # Check if we should simulate failure AFTER prepare
+                if self.name == 'node2-a1' and self.failure_mode == 'after_prepare' and not self.has_failed:
+                    print(f"[{self.name}] Node2 sending READY response before simulated failure")
+                    # Create a thread to simulate failure after response is sent
+                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
+                    failure_thread.daemon = True
+                    failure_thread.start()
+
+                return response
+            else:
+                print(f"[{self.name}] Sending ABORT response")
+                return {
+                    'success': False,
+                    'status': 'abort',
+                    'node': self.name,
+                    'transaction_id': transaction_id,
+                    'reason': 'Transaction validation failed'
+                }
+
+        except Exception as e:
+            print(f"[{self.name}] Error in prepare phase: {str(e)}")
+            return {
+                'success': False,
+                'error': f'Internal error during prepare phase: {str(e)}'
+            }
+
+    def delayed_failure_simulation(self):
+        """Simulate failure after a short delay to allow response to be sent"""
+        time.sleep(0.1)  # Short delay to ensure response is sent
+        print(f"[{self.name}] Node2 simulating failure after prepare...")
+        self.has_failed = True
+        self.simulate_failure()
+
+    def handle_commit(self, data):
+        """Modified commit handler to ensure correct order of operations"""
+        try:
+            transaction_id = data.get('transaction_id')
+            print(f"\n[{self.name}] Received COMMIT for transaction {transaction_id}")
+            
+            # Get the prepared transaction
+            transaction = self.transaction_state.get('current_transaction')
+            if not transaction:
+                print(f"[{self.name}] Error: No transaction found")
+                return {'success': False, 'error': 'No transaction found'}
+            
+            current_balance = self.get_balance()
+            print(f"[{self.name}] Current balance: {current_balance}")
+            
+            # For replicas, wait briefly for primary to update first
+            if self.is_replica:
+                print(f"[{self.name}] Waiting for primary to update...")
+                time.sleep(0.5)  # Brief delay to ensure primary updates first
+                # Get fresh balance from primary
+                primary_node = self.get_primary_node()
+                response = self.send_rpc(
+                    NODES[primary_node]['ip'],
+                    NODES[primary_node]['port'],
+                    'GetBalance',
+                    {}
+                )
+                if response and 'balance' in response:
+                    current_balance = response['balance']
+                    print(f"[{self.name}] Got updated balance from primary: {current_balance}")
+            
+            # Calculate new balance
+            if transaction['type'] == 'transfer':
+                if self.account_name == 'A':
+                    new_balance = current_balance - 100
+                    print(f"[{self.name}] Subtracting transfer amount of 100")
+                else:
+                    new_balance = current_balance + 100
+                    print(f"[{self.name}] Adding transfer amount of 100")
+            else:  # bonus
+                if self.account_name == 'A':
+                    bonus_amount = current_balance * 0.2
+                    new_balance = current_balance + bonus_amount
+                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
+                else:
+                    bonus_amount = transaction.get('bonus_amount', 0)
+                    new_balance = current_balance + bonus_amount
+                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
+
+            # Update balance based on role
+            if self.is_primary:
+                # Primary updates itself and syncs with replicas
+                success = self.update_balance(new_balance)
+                if not success:
+                    return {'success': False, 'error': 'Failed to update and sync'}
+            else:
+                # Replicas verify with primary before updating
+                primary_node = self.get_primary_node()
+                verify_response = self.send_rpc(
+                    NODES[primary_node]['ip'],
+                    NODES[primary_node]['port'],
+                    'GetBalance',
+                    {}
+                )
+                
+                if verify_response and 'balance' in verify_response:
+                    expected_balance = verify_response['balance']
+                    if abs(expected_balance - new_balance) < 0.01:
+                        with open(self.account_file, 'w') as f:
+                            f.write(str(new_balance))
+                        print(f"[{self.name}] Verified and updated balance to {new_balance}")
+                    else:
+                        # If there's a mismatch, use primary's balance
+                        new_balance = expected_balance
+                        with open(self.account_file, 'w') as f:
+                            f.write(str(new_balance))
+                        print(f"[{self.name}] Using primary's balance: {new_balance}")
+                else:
+                    print(f"[{self.name}] Warning: Could not verify with primary")
+                    with open(self.account_file, 'w') as f:
+                        f.write(str(new_balance))
+
+            self.transaction_state['status'] = 'committed'
+            print(f"[{self.name}] Transaction committed. New balance: {new_balance}")
+            return {'success': True, 'new_balance': new_balance}
+                
+        except Exception as e:
+            print(f"[{self.name}] Error in commit phase: {str(e)}")
+            return {'success': False, 'error': str(e)}
+
+    def get_primary_node(self):
+        """Helper function to get primary node name for current cluster"""
+        try:
+            return next(name for name, info in NODES.items() 
+                    if info['role'] == f'primary-{self.cluster}')
+        except StopIteration:
+            print(f"[{self.name}] Error: Could not find primary for cluster {self.cluster}")
+            return None
+
+    def handle_abort(self, data):
+        """Handle abort request from coordinator"""
+        self.transaction_state['status'] = 'aborted'
+        self.transaction_state['current_transaction'] = None
+        return {'success': True}
+    
+
+    def verify_transaction(self, transaction):
+        """Verify if transaction is possible"""
+        if not self.account_file:
+            return False
+            
+        current_balance = self.get_balance()
+        transaction_type = transaction['type']
+        
+        if transaction_type == 'transfer':
+            if self.account_name == 'A':
+                return current_balance >= 100
+            return True
+        elif transaction_type == 'bonus':
+            return True
+        
+        return False
+
+    def execute_transaction(self, transaction):
+        """Execute the transaction"""
+        if not self.account_file:
+            return False
+            
+        try:
+            current_balance = self.get_balance()
+            transaction_type = transaction['type']
+            
+            if transaction_type == 'transfer':
+                if self.account_name == 'A':
+                    new_balance = current_balance - 100
+                else:  # Account B
+                    new_balance = current_balance + 100
+            elif transaction_type == 'bonus':
+                if self.account_name == 'A':
+                    bonus = current_balance * 0.2
+                    new_balance = current_balance + bonus
+                else:  # Account B
+                    bonus = transaction['bonus_amount']  # Passed from A's calculation
+                    new_balance = current_balance + bonus
+                    
+            self.update_balance(new_balance)
+            return True
+        except Exception as e:
+            print(f"[{self.name}] Error executing transaction: {e}")
+            return False
+    
     def send_commit_to_participants(self, transaction_id):
         """Send commit message to all participants"""
         if not self.is_coordinator:
@@ -549,272 +855,7 @@ class Node:
     def reset_election_timer(self):
         self.election_timer = random.uniform(*ELECTION_TIMEOUT)
 
-    def handle_transaction_request(self, data):
-        """Modified to work with replica system"""
-        if self.has_failed:
-            return {'success': False, 'error': 'Node in failed state'}
 
-        if not self.is_coordinator:
-            return {
-                'success': False,
-                'error': 'Not the coordinator',
-                'redirect': True,
-                'leader_name': 'node1'
-            }
-
-        transaction_id = str(time.time())
-        transaction_type = data.get('type')
-        
-        print(f"\n[{self.name}] COORDINATOR: Starting new transaction")
-        print(f"[{self.name}] COORDINATOR: Transaction ID: {transaction_id}")
-        print(f"[{self.name}] COORDINATOR: Transaction type: {transaction_type}")
-
-        # Get primary nodes for transaction
-        node_a_primary = next(node for node, info in NODES.items() 
-                            if info['role'] == 'primary-a')
-        node_b_primary = next(node for node, info in NODES.items() 
-                            if info['role'] == 'primary-b')
-
-        self.transaction_state.update({
-            'transaction_id': transaction_id,
-            'status': 'preparing',
-            'current_transaction': data,
-            'participants_ready': set(),
-            'start_time': time.time()
-        })
-
-        print(f"[{self.name}] COORDINATOR: Sending PREPARE to primaries")
-        prepare_success = self.send_prepare_to_participants(transaction_id, data)
-        
-        if prepare_success:
-            print(f"[{self.name}] COORDINATOR: All participants ready, initiating COMMIT")
-            commit_success = self.send_commit_to_participants(transaction_id)
-            
-            if commit_success:
-                print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
-                self.transaction_state['status'] = 'committed'
-                return {'success': True, 'status': 'committed'}
-            else:
-                print(f"[{self.name}] COORDINATOR: Commit failed")
-                self.transaction_state['status'] = 'failed'
-                return {'success': False, 'error': 'Commit failed'}
-        else:
-            print(f"[{self.name}] COORDINATOR: Prepare failed, initiating ABORT")
-            self.send_abort_to_participants(transaction_id)
-            self.transaction_state['status'] = 'aborted'
-            return {'success': False, 'status': 'aborted', 'error': 'Prepare failed'}
-
-    def handle_prepare(self, data):
-        """
-        Handle prepare request from coordinator for 2PC protocol.
-        Includes failure simulation for testing scenarios.
-        """
-        try:
-            # First, check if we should simulate failure BEFORE prepare
-            if self.name == 'node2-a1' and self.failure_mode:
-                if self.failure_mode == 'before_prepare' and not self.has_failed:
-                    print(f"[{self.name}] Simulating node2 failure before prepare...")
-                    self.has_failed = True
-                    self.simulate_failure()
-                    return None
-                
-            # Normal prepare handling continues if no failure...
-            if self.is_coordinator:
-                print(f"[{self.name}] Error: Coordinator cannot handle prepare phase")
-                return {
-                    'success': False, 
-                    'error': 'Coordinator cannot handle prepare phase'
-                }
-
-            transaction_id = data.get('transaction_id')
-            transaction = data.get('transaction')
-
-            print(f"\n[{self.name}] Received PREPARE for transaction {transaction_id}")
-            current_balance = self.get_balance()
-            print(f"[{self.name}] Current balance: {current_balance}")
-
-            # Transaction validation based on type
-            transaction_type = transaction.get('type')
-            can_process = False
-
-            if transaction_type == 'transfer':
-                if self.account_name == 'A':
-                    can_process = current_balance >= 100
-                    print(f"[{self.name}] Transfer validation: {'Sufficient' if can_process else 'Insufficient'} funds")
-                else:  # Account B
-                    can_process = True
-                    print(f"[{self.name}] Transfer validation: Can receive")
-
-            elif transaction_type == 'bonus':
-                can_process = True
-                if self.account_name == 'A':
-                    bonus_amount = current_balance * 0.2
-                    print(f"[{self.name}] Calculating bonus: {bonus_amount}")
-                else:  # Account B
-                    bonus_amount = transaction.get('bonus_amount', 0)
-                    print(f"[{self.name}] Will receive bonus: {bonus_amount}")
-
-            if can_process:
-                self.transaction_state.update({
-                    'status': 'prepared',
-                    'transaction_id': transaction_id,
-                    'current_transaction': transaction,
-                    'prepare_timestamp': time.time()
-                })
-
-                # Prepare response before simulating failure
-                response = {
-                    'success': True,
-                    'status': 'ready',
-                    'node': self.name,
-                    'transaction_id': transaction_id,
-                    'bonus_amount': bonus_amount if transaction_type == 'bonus' and self.account_name == 'A' else None
-                }
-
-                # Check if we should simulate failure AFTER prepare
-                if self.name == 'node2-a1' and self.failure_mode == 'after_prepare' and not self.has_failed:
-                    print(f"[{self.name}] Node2 sending READY response before simulated failure")
-                    # Create a thread to simulate failure after response is sent
-                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
-                    failure_thread.daemon = True
-                    failure_thread.start()
-
-                return response
-            else:
-                print(f"[{self.name}] Sending ABORT response")
-                return {
-                    'success': False,
-                    'status': 'abort',
-                    'node': self.name,
-                    'transaction_id': transaction_id,
-                    'reason': 'Transaction validation failed'
-                }
-
-        except Exception as e:
-            print(f"[{self.name}] Error in prepare phase: {str(e)}")
-            return {
-                'success': False,
-                'error': f'Internal error during prepare phase: {str(e)}'
-            }
-
-    def delayed_failure_simulation(self):
-        """Simulate failure after a short delay to allow response to be sent"""
-        time.sleep(0.1)  # Short delay to ensure response is sent
-        print(f"[{self.name}] Node2 simulating failure after prepare...")
-        self.has_failed = True
-        self.simulate_failure()
-
-    def handle_commit(self, data):
-        """Modified commit handler with improved sync for all transaction types"""
-        try:
-            transaction_id = data.get('transaction_id')
-            print(f"\n[{self.name}] Received COMMIT for transaction {transaction_id}")
-            
-            # Get the prepared transaction
-            transaction = self.transaction_state.get('current_transaction')
-            current_balance = self.get_balance()
-            print(f"[{self.name}] Executing transaction on balance: {current_balance}")
-            
-            # Calculate new balance
-            if transaction['type'] == 'transfer':
-                if self.account_name == 'A':
-                    new_balance = current_balance - 100
-                    print(f"[{self.name}] Subtracting transfer amount of 100")
-                else:  # Account B
-                    new_balance = current_balance + 100
-                    print(f"[{self.name}] Adding transfer amount of 100")
-            elif transaction['type'] == 'bonus':
-                if self.account_name == 'A':
-                    bonus_amount = current_balance * 0.2
-                    new_balance = current_balance + bonus_amount
-                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
-                else:  # Account B
-                    bonus_amount = transaction.get('bonus_amount', 0)
-                    new_balance = current_balance + bonus_amount
-                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
-
-            # Update balance with proper synchronization
-            if self.is_primary:
-                print(f"[{self.name}] Primary node starting replica synchronization")
-                # Update own balance first
-                with open(self.account_file, 'w') as f:
-                    f.write(str(new_balance))
-                
-                # Then sync with replicas
-                print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
-                sync_success = self.sync_with_replicas(new_balance)
-                if not sync_success:
-                    print(f"[{self.name}] Warning: Some replicas may be out of sync")
-            else:
-                # For replicas, try to get the latest balance from primary first
-                print(f"[{self.name}] Attempting to recover state from primary {self.get_primary_node()}")
-                self.recover_replica()
-                
-                # Then update local balance
-                with open(self.account_file, 'w') as f:
-                    f.write(str(new_balance))
-                print(f"[{self.name}] Updating balance to {new_balance} from primary")
-
-            # Update transaction state
-            self.transaction_state['status'] = 'committed'
-            print(f"[{self.name}] Transaction committed. New balance: {new_balance}")
-            return {'success': True, 'new_balance': new_balance}
-
-        except Exception as e:
-            print(f"[{self.name}] Error in commit phase: {str(e)}")
-            return {'success': False, 'error': str(e)}
-
-    def handle_abort(self, data):
-        """Handle abort request from coordinator"""
-        self.transaction_state['status'] = 'aborted'
-        self.transaction_state['current_transaction'] = None
-        return {'success': True}
-    
-
-    def verify_transaction(self, transaction):
-        """Verify if transaction is possible"""
-        if not self.account_file:
-            return False
-            
-        current_balance = self.get_balance()
-        transaction_type = transaction['type']
-        
-        if transaction_type == 'transfer':
-            if self.account_name == 'A':
-                return current_balance >= 100
-            return True
-        elif transaction_type == 'bonus':
-            return True
-        
-        return False
-
-    def execute_transaction(self, transaction):
-        """Execute the transaction"""
-        if not self.account_file:
-            return False
-            
-        try:
-            current_balance = self.get_balance()
-            transaction_type = transaction['type']
-            
-            if transaction_type == 'transfer':
-                if self.account_name == 'A':
-                    new_balance = current_balance - 100
-                else:  # Account B
-                    new_balance = current_balance + 100
-            elif transaction_type == 'bonus':
-                if self.account_name == 'A':
-                    bonus = current_balance * 0.2
-                    new_balance = current_balance + bonus
-                else:  # Account B
-                    bonus = transaction['bonus_amount']  # Passed from A's calculation
-                    new_balance = current_balance + bonus
-                    
-            self.update_balance(new_balance)
-            return True
-        except Exception as e:
-            print(f"[{self.name}] Error executing transaction: {e}")
-            return False
 
     """
     This function handles the RequestVote RPC. It checks if the term is higher than the current term,
