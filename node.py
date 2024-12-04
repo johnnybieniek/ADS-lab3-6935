@@ -376,7 +376,12 @@ class Node:
             if commit_success:
                 print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
                 self.transaction_state['status'] = 'committed'
-                return {'success': True, 'status': 'committed'}
+                response = {'success': True, 'status': 'committed'}
+                if self.failure_mode == "coordinator_after_commit" and not self.has_failed:
+                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
+                    failure_thread.daemon = True
+                    failure_thread.start()
+                return response
             else:
                 print(f"[{self.name}] COORDINATOR: Commit failed")
                 self.transaction_state['status'] = 'failed'
