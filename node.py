@@ -7,8 +7,8 @@ import sys
 import random
 
 # For local testing
-LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
-               'cluster': node.get('cluster')} for name, node in NODES.items()}
+#LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
+#               'cluster': node.get('cluster')} for name, node in NODES.items()}
 
 # Timeout settings (in seconds)
 ELECTION_TIMEOUT = (2, 4)  # Range for random election timeout to make it more realistic
