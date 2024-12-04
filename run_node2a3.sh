@@ -7,4 +7,4 @@ cd /home/janbieniek/ADS-lab3-6935
 git pull
 
 # Run the script
-python3 node.py node3
+python3 node.py node2-a3

@@ -6,106 +6,153 @@ import json
 import sys
 import random
 
-
-
-
-
-# Hardcoding the nodes IP addresses and ports for ease of use
-NODES = {
-    'node1': {'ip': '10.128.0.3', 'port': 5001},
-    'node2': {'ip': '10.128.0.5', 'port': 5002},
-    'node3': {'ip': '10.128.0.6', 'port': 5003},
-}
 # For local testing
-#NODES = {
-#    'node1': {'ip': 'localhost', 'port': 5001},
-#    'node2': {'ip': 'localhost', 'port': 5002},
-#    'node3': {'ip': 'localhost', 'port': 5003},
-#}
+LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
+               'cluster': node.get('cluster')} for name, node in NODES.items()}
 
 # Timeout settings (in seconds)
 ELECTION_TIMEOUT = (2, 4)  # Range for random election timeout to make it more realistic
 HEARTBEAT_INTERVAL = 0.5  # Interval for leader to send heartbeats
+MAJORITY_SIZE = 2  # Minimum votes needed for consensus in each cluster (3 nodes, need 2)
 
 
-"""
-Initialize the Node class for each node. 
-Some of the key attributes are:
-- name: The name of the node
-- ip: The IP address of the node
-- port: The port number of the node
-- state: The current state of the node (Follower, Candidate, Leader)
-- current_term: The current term of the node
-- voted_for: The node that received the most votes in the current term
-- log: The log of the node
-- commit_index: The index of the last committed entry in the log
-- last_applied: The index of the last applied entry in the log
-- next_index: The next index to be replicated to each follower
-- match_index: The index of the last entry that has been replicated to each follower
-- leader_id: The ID of the current leader
-- election_timer: The timer for the election timeout
-- heartbeat_timer: The timer for the heartbeat interval
-- server_socket: The socket for the node to listen for incoming connections
-- running: A flag to indicate whether the node is running or not
-- lock: A lock to ensure thread safety
-"""
+# Cluster configurations
+CLUSTER_A = ['node2-a1', 'node2-a2', 'node2-a3']
+CLUSTER_B = ['node3-b1', 'node3-b2', 'node3-b3']
+
+# Updated node configuration with replicas
+NODES = {
+    # Coordinator
+    'node1': {'ip': '10.128.0.3', 'port': 5001, 'role': 'coordinator'},
+    
+    # Account A cluster
+    'node2-a1': {'ip': '10.128.0.5', 'port': 5002, 'role': 'primary-a', 'cluster': 'a'},
+    'node2-a2': {'ip': '10.128.0.7', 'port': 5004, 'role': 'replica-a', 'cluster': 'a'},
+    'node2-a3': {'ip': '10.128.0.8', 'port': 5005, 'role': 'replica-a', 'cluster': 'a'},
+    
+    # Account B cluster
+    'node3-b1': {'ip': '10.128.0.6', 'port': 5003, 'role': 'primary-b', 'cluster': 'b'},
+    'node3-b2': {'ip': '10.128.0.9', 'port': 5006, 'role': 'replica-b', 'cluster': 'b'},
+    'node3-b3': {'ip': '10.128.0.10', 'port': 5007, 'role': 'replica-b', 'cluster': 'b'}
+}
+
+
+
+
 class Node:
     def __init__(self, name, scenario='A', failure_mode=None):
+        # Existing initialization
         self.name = name
-        self.ip = NODES[self.name]['ip']
-        self.port = NODES[self.name]['port']
-        self.state = 'Follower'
-        self.current_term = 0
-        self.voted_for = None
-        self.log = [] 
-        self.commit_index = -1
-        self.last_applied = -1
-        self.next_index = {}
-        self.match_index = {}
-        self.leader_id = None
-        self.election_timer = None
-        self.heartbeat_timer = None
-        self.server_socket = None
-        self.running = True
-        self.lock = threading.Lock()
+        self.node_info = NODES[name]
+        self.ip = self.node_info['ip']
+        self.port = self.node_info['port']
+        self.role = self.node_info['role']
+        self.cluster = self.node_info.get('cluster')
+        
+        # Replica-specific attributes
+        self.is_primary = self.role.startswith('primary')
+        self.is_replica = self.role.startswith('replica')
+        self.replica_group = []
+        self.last_sync_time = time.time()
+        
+        # Set up replica groups based on cluster
+        if self.cluster == 'a':
+            self.replica_group = CLUSTER_A
+        elif self.cluster == 'b':
+            self.replica_group = CLUSTER_B
+            
+        # Initialize replica states for monitoring
+        self.replica_states = {
+            node: {'last_updated': time.time(), 'active': True}
+            for node in self.replica_group if node != self.name
+        }
 
+        # Existing state initialization
         self.failure_mode = failure_mode
         self.scenario = scenario
         self.has_failed = False
-        
-        # Creating the log file
         self.log_filename = f"CISC6935-{self.name}"
-        open(self.log_filename, 'w').close()
-
-
-        # adding some 2PC specific attributes and hardcoding the accounts to specific nodes
-
-        self.is_coordinator = (name == 'node1')  # Node1 is coordinator
+        self.is_coordinator = (self.role == 'coordinator')
+        
+        # Account setup
         self.account_file = None
         self.account_name = None
-
-        if name == 'node2':
-            self.account_file = 'account_A.txt'
+        if self.cluster == 'a':
+            self.account_file = f'account_A_{self.name}.txt'
             self.account_name = 'A'
-        elif name == 'node3':
-            self.account_file = 'account_B.txt'
+        elif self.cluster == 'b':
+            self.account_file = f'account_B_{self.name}.txt'
             self.account_name = 'B'
-        
-        # 2PC Transaction State
+
+        # Initialize account if needed
+        if self.account_file:
+            self.initialize_account(scenario)
+
+        # Transaction state
         self.transaction_state = {
-            'status': None,  # 'preparing', 'committing', 'aborting'
+            'status': None,
             'transaction_id': None,
             'participants_ready': set(),
             'participants_committed': set(),
             'transaction_log': [],
             'current_transaction': None
         }
+
+    def sync_with_replicas(self, new_balance):
+        """Synchronize balance with replicas"""
+        if not self.is_primary:
+            return True
+            
+        print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
+        successful_syncs = 1  # Count self
         
-        # Initialize account if this node manages one
-        if self.account_file:
-            self.initialize_account(scenario)
+        for replica in self.replica_group:
+            if replica == self.name:
+                continue
+                
+            print(f"[{self.name}] Syncing with replica: {replica}")
+            response = self.send_rpc(
+                NODES[replica]['ip'],
+                NODES[replica]['port'],
+                'SyncBalance',
+                {'balance': new_balance}
+            )
+            
+            if response and response.get('success'):
+                successful_syncs += 1
+                self.replica_states[replica]['last_updated'] = time.time()
+                self.replica_states[replica]['active'] = True
+                print(f"[{self.name}] Successfully synced with {replica}")
+            else:
+                print(f"[{self.name}] Failed to sync with {replica}")
+                self.replica_states[replica]['active'] = False
 
+        # Need majority for successful sync
+        required_syncs = (len(self.replica_group) // 2) + 1
+        sync_success = successful_syncs >= required_syncs
+        print(f"[{self.name}] Sync complete. Success: {sync_success} ({successful_syncs}/{len(self.replica_group)} nodes)")
+        return sync_success
 
+    def handle_sync_balance(self, data):
+        """Handle balance sync request from primary"""
+        try:
+            if not self.is_replica:
+                return {'success': False, 'error': 'Not a replica'}
+                
+            new_balance = data.get('balance')
+            if new_balance is None:
+                return {'success': False, 'error': 'No balance provided'}
+                
+            print(f"[{self.name}] Updating balance to {new_balance} from primary")
+            with open(self.account_file, 'w') as f:
+                f.write(str(new_balance))
+            
+            self.last_sync_time = time.time()
+            return {'success': True}
+            
+        except Exception as e:
+            print(f"[{self.name}] Error in sync balance: {str(e)}")
+            return {'success': False, 'error': str(e)}
 
     def initialize_account(self, scenario='A'):
         """Initialize account file with balance based on scenario"""
@@ -128,11 +175,53 @@ class Node:
             print(f"[{self.name}] Error writing to account file: {str(e)}")
 
     def get_balance(self):
-        """Get current account balance"""
+        """Modified to handle replica reads"""
         if not self.account_file:
             return None
-        with open(self.account_file, 'r') as f:
-            return float(f.read().strip())
+            
+        try:
+            with open(self.account_file, 'r') as f:
+                balance = float(f.read().strip())
+                
+            # If this is a replica and the last sync was too long ago,
+            # try to get fresh data from primary
+            if self.is_replica and time.time() - self.last_sync_time > 5:  # 5 second threshold
+                self.recover_replica()
+                
+            return balance
+        except Exception as e:
+            print(f"[{self.name}] Error reading balance: {str(e)}")
+            return None
+
+    def recover_replica(self):
+        """Recover a replica that was down"""
+        if not self.is_replica:
+            return
+            
+        try:
+            # Find primary for this cluster
+            primary_node = next(node for node, info in NODES.items() 
+                           if info['role'] == f'primary-{self.cluster}')
+            
+            print(f"[{self.name}] Attempting to recover state from primary {primary_node}")
+            
+            # Get current balance from primary
+            response = self.send_rpc(
+                NODES[primary_node]['ip'],
+                NODES[primary_node]['port'],
+                'GetBalance',
+                {}
+            )
+            
+            if response and 'balance' in response:
+                self.update_balance(response['balance'])
+                self.last_sync_time = time.time()
+                print(f"[{self.name}] Successfully recovered state from primary")
+            else:
+                print(f"[{self.name}] Failed to recover state from primary")
+                
+        except Exception as e:
+            print(f"[{self.name}] Error in replica recovery: {str(e)}")
         
     def simulate_failure(self):
         """Simulate node failure with sleep"""
@@ -141,12 +230,28 @@ class Node:
         self.has_failed = True
 
     def update_balance(self, new_balance):
-        """Update account balance"""
+        """Modified to include replica synchronization"""
         if not self.account_file:
             return False
-        with open(self.account_file, 'w') as f:
-            f.write(str(new_balance))
-        return True
+            
+        try:
+            # If this is a replica, just update local balance
+            if self.is_replica:
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                return True
+                
+            # If this is primary, sync with replicas first
+            sync_success = self.sync_with_replicas(new_balance)
+            if sync_success:
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                return True
+            return False
+            
+        except Exception as e:
+            print(f"[{self.name}] Error updating balance: {str(e)}")
+            return False
 
     def send_prepare_to_participants(self, transaction_id, transaction_data):
         """Coordinator sends prepare messages to all participants"""
@@ -358,6 +463,7 @@ class Node:
     and then calls the appropriate function to handle the request.
     """
     def handle_client_connection(self, client_socket):
+        """Modified to handle replica-related RPCs"""
         try:
             data = client_socket.recv(4096).decode()
             if data:
@@ -366,15 +472,18 @@ class Node:
                 response = {}
 
                 with self.lock:
-                    # Keep existing RPC handlers
-                    if rpc_type == 'RequestVote':
+                    # Handle replica-specific RPCs
+                    if rpc_type == 'SyncBalance':
+                        response = self.handle_sync_balance(request['data'])
+                    elif rpc_type == 'GetBalance':
+                        response = {'balance': self.get_balance()}
+                    # Handle existing RPCs
+                    elif rpc_type == 'RequestVote':
                         response = self.handle_request_vote(request['data'])
                     elif rpc_type == 'AppendEntries':
                         response = self.handle_append_entries(request['data'])
-                    # Add new 2PC RPC handlers
-                    elif rpc_type == 'SetupScenario':  # Add this line
-                        print(f"[{self.name}] Handling setup scenario request")
-                        response = self.handle_setup_scenario(request['data'])  # Add this line
+                    elif rpc_type == 'SetupScenario':
+                        response = self.handle_setup_scenario(request['data'])
                     elif rpc_type == 'Prepare':
                         response = self.handle_prepare(request['data'])
                     elif rpc_type == 'Commit':
@@ -383,7 +492,6 @@ class Node:
                         response = self.handle_abort(request['data'])
                     elif rpc_type == 'TransactionRequest':
                         response = self.handle_transaction_request(request['data'])
-                    # Keep other existing handlers
                     elif rpc_type == 'GetStatus':
                         response = self.handle_get_status()
                     else:
@@ -400,16 +508,11 @@ class Node:
         self.election_timer = random.uniform(*ELECTION_TIMEOUT)
 
     def handle_transaction_request(self, data):
-        """Handle incoming transaction request from client"""
+        """Modified to work with replica system"""
         if self.has_failed:
-            return {
-                'success': False,
-                'error': 'Node in failed state',
-                'status': 'failed'
-            }
+            return {'success': False, 'error': 'Node in failed state'}
 
         if not self.is_coordinator:
-            print(f"[{self.name}] Not coordinator, redirecting to node1")
             return {
                 'success': False,
                 'error': 'Not the coordinator',
@@ -423,12 +526,12 @@ class Node:
         print(f"\n[{self.name}] COORDINATOR: Starting new transaction")
         print(f"[{self.name}] COORDINATOR: Transaction ID: {transaction_id}")
         print(f"[{self.name}] COORDINATOR: Transaction type: {transaction_type}")
-        
-        if transaction_type not in ['transfer', 'bonus']:
-            return {
-                'success': False,
-                'error': 'Invalid transaction type'
-            }
+
+        # Get primary nodes for transaction
+        node_a_primary = next(node for node, info in NODES.items() 
+                            if info['role'] == 'primary-a')
+        node_b_primary = next(node for node, info in NODES.items() 
+                            if info['role'] == 'primary-b')
 
         self.transaction_state.update({
             'transaction_id': transaction_id,
@@ -438,7 +541,7 @@ class Node:
             'start_time': time.time()
         })
 
-        print(f"[{self.name}] COORDINATOR: Sending PREPARE to all participants")
+        print(f"[{self.name}] COORDINATOR: Sending PREPARE to primaries")
         prepare_success = self.send_prepare_to_participants(transaction_id, data)
         
         if prepare_success:
@@ -448,38 +551,16 @@ class Node:
             if commit_success:
                 print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
                 self.transaction_state['status'] = 'committed'
-                
-                # Prepare success response before potential failure
-                response = {
-                    'success': True,
-                    'status': 'committed'
-                }
-                
-                # Check if we should simulate coordinator failure after commit
-                if self.failure_mode == 'coordinator_after_commit' and not self.has_failed:
-                    print(f"[{self.name}] COORDINATOR: Sending success response before simulated failure")
-                    # Create thread to simulate failure after response
-                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
-                    failure_thread.daemon = True
-                    failure_thread.start()
-                    
-                return response
+                return {'success': True, 'status': 'committed'}
             else:
                 print(f"[{self.name}] COORDINATOR: Commit failed")
                 self.transaction_state['status'] = 'failed'
-                return {
-                    'success': False,
-                    'error': 'Commit failed'
-                }
+                return {'success': False, 'error': 'Commit failed'}
         else:
             print(f"[{self.name}] COORDINATOR: Prepare failed, initiating ABORT")
             self.send_abort_to_participants(transaction_id)
             self.transaction_state['status'] = 'aborted'
-            return {
-                'success': False,
-                'status': 'aborted',
-                'error': 'Prepare failed'
-            }
+            return {'success': False, 'status': 'aborted', 'error': 'Prepare failed'}
 
     def handle_prepare(self, data):
         """

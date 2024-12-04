@@ -3,18 +3,29 @@ import json
 import cmd
 import time
 
-# Hardcoding the nodes IP addresses and ports for ease of use
+# Cluster configurations
+CLUSTER_A = ['node2-a1', 'node2-a2', 'node2-a3']
+CLUSTER_B = ['node3-b1', 'node3-b2', 'node3-b3']
+
+# Updated node configuration with replicas
 NODES = {
-    'node1': {'ip': '10.128.0.3', 'port': 5001},
-    'node2': {'ip': '10.128.0.5', 'port': 5002},
-    'node3': {'ip': '10.128.0.6', 'port': 5003},
+    # Coordinator
+    'node1': {'ip': '10.128.0.3', 'port': 5001, 'role': 'coordinator'},
+    
+    # Account A cluster
+    'node2-a1': {'ip': '10.128.0.5', 'port': 5002, 'role': 'primary-a', 'cluster': 'a'},
+    'node2-a2': {'ip': '10.128.0.7', 'port': 5004, 'role': 'replica-a', 'cluster': 'a'},
+    'node2-a3': {'ip': '10.128.0.8', 'port': 5005, 'role': 'replica-a', 'cluster': 'a'},
+    
+    # Account B cluster
+    'node3-b1': {'ip': '10.128.0.6', 'port': 5003, 'role': 'primary-b', 'cluster': 'b'},
+    'node3-b2': {'ip': '10.128.0.9', 'port': 5006, 'role': 'replica-b', 'cluster': 'b'},
+    'node3-b3': {'ip': '10.128.0.10', 'port': 5007, 'role': 'replica-b', 'cluster': 'b'}
 }
+
 # For local testing
-#NODES = {
-#    'node1': {'ip': 'localhost', 'port': 5001},
-#    'node2': {'ip': 'localhost', 'port': 5002},
-#    'node3': {'ip': 'localhost', 'port': 5003},
-#}
+LOCAL_NODES = {name: {'ip': 'localhost', 'port': node['port'], 'role': node['role'], 
+               'cluster': node.get('cluster')} for name, node in NODES.items()}
 
 """
 This code initializes the client class. 
@@ -30,31 +41,30 @@ class RaftClient(cmd.Cmd):
         'Initiate a transfer transaction: transfer'
         print("\nInitiating transfer transaction...")
         
-        for node_name, node_info in NODES.items():
-            response = self.send_rpc(
-                node_info['ip'],
-                node_info['port'],
-                'TransactionRequest',
-                {'type': 'transfer', 'amount': 100},
-                timeout=5
-            )
-            
-            if response:
-                if response.get('redirect'):
-                    print(f"Redirecting to coordinator...")
-                    continue
-                    
-                if response.get('success'):
-                    print(f"Transaction completed successfully!")
-                    print(f"Status: {response.get('status')}")
-                    return
-                else:
-                    print(f"Transaction failed: {response.get('error', 'Unknown error')}")
-                    return
-            else:
-                print(f"No response from {node_name}")
+        # Always send to coordinator first
+        coordinator_info = NODES['node1']
+        response = self.send_rpc(
+            coordinator_info['ip'],
+            coordinator_info['port'],
+            'TransactionRequest',
+            {'type': 'transfer', 'amount': 100},
+            timeout=5
+        )
         
-        print("Transaction failed - no available nodes")
+        if response:
+            if response.get('redirect'):
+                print(f"Redirecting to coordinator...")
+                return
+                
+            if response.get('success'):
+                print(f"Transaction completed successfully!")
+                print(f"Status: {response.get('status')}")
+                return
+            else:
+                print(f"Transaction failed: {response.get('error', 'Unknown error')}")
+                return
+        else:
+            print("Transaction failed - coordinator not responding")
 
     def do_bonus(self, arg):
         'Initiate a bonus transaction: bonus'
@@ -90,6 +100,19 @@ class RaftClient(cmd.Cmd):
             'scenario': scenario,
             'failure_mode': failure_mode
         })
+
+        def handle_transaction_response(self, response):
+            """Handle transaction response from coordinator"""
+            if response.get('redirect'):
+                print(f"Redirecting to coordinator...")
+                return
+                
+            if response.get('success'):
+                print(f"Transaction completed successfully!")
+                print(f"Status: {response.get('status')}")
+                return
+            else:
+                print(f"Transaction failed: {response.get('error', 'Unknown error')}")
 
     """
     This function sends a RPC request to a specific node.
@@ -241,19 +264,28 @@ class RaftClient(cmd.Cmd):
                 
                 if response:
                     state = response.get('state', 'UNKNOWN')
-                    term = response.get('term', 'UNKNOWN')
-                    leader = response.get('leader_name', 'UNKNOWN')
-                    log_size = response.get('log_size', 'UNKNOWN')
+                    role = node_info['role']
+                    cluster = node_info.get('cluster', 'coordinator')
                     
-                    print(f"{node_name}:")
+                    print(f"\n{node_name}:")
+                    print(f"  Role: {role}")
+                    print(f"  Cluster: {cluster}")
                     print(f"  State: {state}")
-                    print(f"  Term: {term}")
-                    print(f"  Current Leader: {leader}")
-                    print(f"  Log Size: {log_size}")
+                    
+                    # Get balance for nodes with accounts
+                    if 'cluster' in node_info:
+                        balance_response = self.send_rpc(
+                            node_info['ip'],
+                            node_info['port'],
+                            'GetBalance',
+                            {}
+                        )
+                        if balance_response and 'balance' in balance_response:
+                            print(f"  Balance: {balance_response['balance']}")
                 else:
-                    print(f"{node_name}: UNREACHABLE")
+                    print(f"\n{node_name}: UNREACHABLE")
             except Exception as e:
-                print(f"{node_name}: UNREACHABLE ({str(e)})")
+                print(f"\n{node_name}: UNREACHABLE ({str(e)})")
         print()
 
     """
