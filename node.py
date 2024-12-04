@@ -116,8 +116,13 @@ class Node:
             'current_transaction': None
         }
 
+    def get_primary_node(self):
+        """Helper function to get primary node name for current cluster"""
+        return next(name for name, info in NODES.items() 
+                if info['role'] == f'primary-{self.cluster}')
+
     def sync_with_replicas(self, new_balance):
-        """Synchronize balance with replicas"""
+        """Enhanced synchronization with explicit messaging"""
         if not self.is_primary:
             return True
             
@@ -129,23 +134,42 @@ class Node:
                 continue
                 
             print(f"[{self.name}] Syncing with replica: {replica}")
-            response = self.send_rpc(
-                NODES[replica]['ip'],
-                NODES[replica]['port'],
-                'SyncBalance',
-                {'balance': new_balance}
-            )
+            retries = 3
             
-            if response and response.get('success'):
-                successful_syncs += 1
-                self.replica_states[replica]['last_updated'] = time.time()
-                self.replica_states[replica]['active'] = True
-                print(f"[{self.name}] Successfully synced with {replica}")
-            else:
-                print(f"[{self.name}] Failed to sync with {replica}")
-                self.replica_states[replica]['active'] = False
-
-        # Need majority for successful sync
+            while retries > 0:
+                response = self.send_rpc(
+                    NODES[replica]['ip'],
+                    NODES[replica]['port'],
+                    'SyncBalance',
+                    {
+                        'balance': new_balance,
+                        'source': self.name,
+                        'timestamp': time.time()
+                    }
+                )
+                
+                if response and response.get('success'):
+                    # Verify the sync
+                    verify_response = self.send_rpc(
+                        NODES[replica]['ip'],
+                        NODES[replica]['port'],
+                        'GetBalance',
+                        {}
+                    )
+                    
+                    if verify_response and abs(verify_response.get('balance', 0) - new_balance) < 0.01:
+                        successful_syncs += 1
+                        self.replica_states[replica]['last_updated'] = time.time()
+                        print(f"[{self.name}] Successfully synced with {replica}")
+                        break
+                        
+                retries -= 1
+                if retries > 0:
+                    print(f"[{self.name}] Retry sync with {replica}")
+                    time.sleep(0.5)
+                else:
+                    print(f"[{self.name}] Failed to sync with {replica}")
+                    
         required_syncs = (len(self.replica_group) // 2) + 1
         sync_success = successful_syncs >= required_syncs
         print(f"[{self.name}] Sync complete. Success: {sync_success} ({successful_syncs}/{len(self.replica_group)} nodes)")
@@ -681,87 +705,64 @@ class Node:
         self.simulate_failure()
 
     def handle_commit(self, data):
-        """
-        Handle commit request from coordinator.
-        Executes the prepared transaction and updates account balances.
-        
-        Args:
-            data (dict): Contains transaction_id and any additional transaction data
-            
-        Returns:
-            dict: Response indicating success or failure of commit operation
-        """
+        """Modified commit handler with improved sync for all transaction types"""
         try:
             transaction_id = data.get('transaction_id')
             print(f"\n[{self.name}] Received COMMIT for transaction {transaction_id}")
             
-            # Verify transaction state
-            if not self.transaction_state:
-                print(f"[{self.name}] Error: No transaction state found")
-                return {'success': False, 'error': 'No transaction state found'}
-                
-            if self.transaction_state.get('status') != 'prepared':
-                print(f"[{self.name}] Error: Not in prepared state")
-                print(f"Current state: {self.transaction_state.get('status', 'unknown')}")
-                return {'success': False, 'error': 'Not prepared'}
-                
             # Get the prepared transaction
             transaction = self.transaction_state.get('current_transaction')
-            if not transaction:
-                print(f"[{self.name}] Error: No transaction found")
-                return {'success': False, 'error': 'No transaction found'}
-            
-            # Get current balance and execute transaction
             current_balance = self.get_balance()
             print(f"[{self.name}] Executing transaction on balance: {current_balance}")
             
-            # Handle different transaction types
-            transaction_type = transaction.get('type')
-            if transaction_type == 'transfer':
+            # Calculate new balance
+            if transaction['type'] == 'transfer':
                 if self.account_name == 'A':
                     new_balance = current_balance - 100
+                    print(f"[{self.name}] Subtracting transfer amount of 100")
                 else:  # Account B
                     new_balance = current_balance + 100
-            elif transaction_type == 'bonus':
+                    print(f"[{self.name}] Adding transfer amount of 100")
+            elif transaction['type'] == 'bonus':
                 if self.account_name == 'A':
-                    bonus_amount = self.transaction_state.get('bonus_amount', current_balance * 0.2)
+                    bonus_amount = current_balance * 0.2
                     new_balance = current_balance + bonus_amount
                     print(f"[{self.name}] Adding bonus of {bonus_amount}")
                 else:  # Account B
                     bonus_amount = transaction.get('bonus_amount', 0)
                     new_balance = current_balance + bonus_amount
                     print(f"[{self.name}] Adding bonus of {bonus_amount}")
+
+            # Update balance with proper synchronization
+            if self.is_primary:
+                print(f"[{self.name}] Primary node starting replica synchronization")
+                # Update own balance first
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                
+                # Then sync with replicas
+                print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
+                sync_success = self.sync_with_replicas(new_balance)
+                if not sync_success:
+                    print(f"[{self.name}] Warning: Some replicas may be out of sync")
             else:
-                print(f"[{self.name}] Error: Invalid transaction type {transaction_type}")
-                return {'success': False, 'error': 'Invalid transaction type'}
-            
-            # Update balance and verify
-            try:
-                success = self.update_balance(new_balance)
-                if not success:
-                    print(f"[{self.name}] Failed to update balance")
-                    return {'success': False, 'error': 'Failed to update balance'}
-            except Exception as e:
-                print(f"[{self.name}] Error updating balance: {str(e)}")
-                return {'success': False, 'error': f'Balance update failed: {str(e)}'}
-            
+                # For replicas, try to get the latest balance from primary first
+                print(f"[{self.name}] Attempting to recover state from primary {self.get_primary_node()}")
+                self.recover_replica()
+                
+                # Then update local balance
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                print(f"[{self.name}] Updating balance to {new_balance} from primary")
+
             # Update transaction state
             self.transaction_state['status'] = 'committed'
             print(f"[{self.name}] Transaction committed. New balance: {new_balance}")
-            
-            return {
-                'success': True,
-                'status': 'committed',
-                'transaction_id': transaction_id,
-                'new_balance': new_balance
-            }
-                
+            return {'success': True, 'new_balance': new_balance}
+
         except Exception as e:
             print(f"[{self.name}] Error in commit phase: {str(e)}")
-            return {
-                'success': False,
-                'error': f'Internal error during commit phase: {str(e)}'
-            }
+            return {'success': False, 'error': str(e)}
 
     def handle_abort(self, data):
         """Handle abort request from coordinator"""
