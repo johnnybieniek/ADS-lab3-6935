@@ -4,16 +4,16 @@ import cmd
 import time
 
 # Hardcoding the nodes IP addresses and ports for ease of use
-# NODES = {
-#     'node1': {'ip': '10.128.0.3', 'port': 5001},
-#     'node2': {'ip': '10.128.0.5', 'port': 5002},
-#     'node3': {'ip': '10.128.0.6', 'port': 5003},
-# }
 NODES = {
-    'node1': {'ip': 'localhost', 'port': 5001},
-    'node2': {'ip': 'localhost', 'port': 5002},
-    'node3': {'ip': 'localhost', 'port': 5003},
+    'node1': {'ip': '10.128.0.3', 'port': 5001},
+    'node2': {'ip': '10.128.0.5', 'port': 5002},
+    'node3': {'ip': '10.128.0.6', 'port': 5003},
 }
+#NODES = {
+#    'node1': {'ip': 'localhost', 'port': 5001},
+#    'node2': {'ip': 'localhost', 'port': 5002},
+#    'node3': {'ip': 'localhost', 'port': 5003},
+#}
 
 """
 This code initializes the client class. 
@@ -29,55 +29,31 @@ class RaftClient(cmd.Cmd):
         'Initiate a transfer transaction: transfer'
         print("\nInitiating transfer transaction...")
         
-        tried_nodes = set()
-        retries = 0
-        max_retries = 3
-        
-        while retries < max_retries:
-            for node_name, node_info in NODES.items():
-                if node_name in tried_nodes:
+        for node_name, node_info in NODES.items():
+            response = self.send_rpc(
+                node_info['ip'],
+                node_info['port'],
+                'TransactionRequest',
+                {'type': 'transfer', 'amount': 100},
+                timeout=5
+            )
+            
+            if response:
+                if response.get('redirect'):
+                    print(f"Redirecting to coordinator...")
                     continue
                     
-                response = self.send_rpc(
-                    node_info['ip'],
-                    node_info['port'],
-                    'TransactionRequest',
-                    {'type': 'transfer', 'amount': 100},
-                    timeout=5
-                )
-                
-                if response and response.get('error') == 'Node in failed state':
-                    print(f"Node {node_name} is in failed state")
-                    tried_nodes.add(node_name)
-                    continue
-                
-                if response:
-                    if response.get('redirect'):
-                        tried_nodes.add(node_name)
-                        print(f"Redirecting to coordinator...")
-                        continue
-                        
-                    if response.get('success'):
-                        print(f"Transaction completed successfully!")
-                        print(f"Status: {response.get('status')}")
-                        if response.get('message'):
-                            print(f"Message: {response.get('message')}")
-                        return
-                    else:
-                        print(f"Transaction failed: {response.get('error', 'Unknown error')}")
-                        return
+                if response.get('success'):
+                    print(f"Transaction completed successfully!")
+                    print(f"Status: {response.get('status')}")
+                    return
                 else:
-                    print(f"No response from {node_name} - possible coordinator failure")
-                    tried_nodes.add(node_name)
-            
-            retries += 1
-            if len(tried_nodes) == len(NODES):
-                time.sleep(retries * 2)  # Exponential backoff
-                if retries < max_retries:
-                    print(f"All nodes tried, waiting before retry {retries}/{max_retries}...")
-                tried_nodes.clear()
+                    print(f"Transaction failed: {response.get('error', 'Unknown error')}")
+                    return
+            else:
+                print(f"No response from {node_name}")
         
-        print("Transaction failed after maximum retries - coordinator may have crashed")
+        print("Transaction failed - no available nodes")
 
     def do_bonus(self, arg):
         'Initiate a bonus transaction: bonus'
@@ -101,7 +77,7 @@ class RaftClient(cmd.Cmd):
             return
         
         # Validate failure modes
-        valid_failure_modes = ['before_prepare', 'after_prepare', 'coordinator_after_prepare']
+        valid_failure_modes = ['before_prepare', 'after_prepare', 'coordinator_after_commit']
         if failure_mode and failure_mode not in valid_failure_modes:
             print(f"Invalid failure mode. Choose from: {', '.join(valid_failure_modes)}")
             return

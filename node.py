@@ -5,21 +5,22 @@ import time
 import json
 import sys
 import random
-import os
+
+
 
 
 
 # Hardcoding the nodes IP addresses and ports for ease of use
-# NODES = {
-#     'node1': {'ip': '10.128.0.3', 'port': 5001},
-#     'node2': {'ip': '10.128.0.5', 'port': 5002},
-#     'node3': {'ip': '10.128.0.6', 'port': 5003},
-# }
 NODES = {
-    'node1': {'ip': 'localhost', 'port': 5001},
-    'node2': {'ip': 'localhost', 'port': 5002},
-    'node3': {'ip': 'localhost', 'port': 5003},
+    'node1': {'ip': '10.128.0.3', 'port': 5001},
+    'node2': {'ip': '10.128.0.5', 'port': 5002},
+    'node3': {'ip': '10.128.0.6', 'port': 5003},
 }
+#NODES = {
+#    'node1': {'ip': 'localhost', 'port': 5001},
+#    'node2': {'ip': 'localhost', 'port': 5002},
+#    'node3': {'ip': 'localhost', 'port': 5003},
+#}
 
 # Timeout settings (in seconds)
 ELECTION_TIMEOUT = (2, 4)  # Range for random election timeout to make it more realistic
@@ -80,6 +81,7 @@ class Node:
 
         self.is_coordinator = (name == 'node1')  # Node1 is coordinator
         self.account_file = None
+        self.account_name = None
 
         if name == 'node2':
             self.account_file = 'account_A.txt'
@@ -398,14 +400,13 @@ class Node:
 
     def handle_transaction_request(self, data):
         """Handle incoming transaction request from client"""
-
         if self.has_failed:
             return {
                 'success': False,
                 'error': 'Node in failed state',
                 'status': 'failed'
             }
-    
+
         if not self.is_coordinator:
             print(f"[{self.name}] Not coordinator, redirecting to node1")
             return {
@@ -433,22 +434,8 @@ class Node:
             'status': 'preparing',
             'current_transaction': data,
             'participants_ready': set(),
-            'start_time': time.time()  # Track transaction start time
+            'start_time': time.time()
         })
-
-        # Simulate coordinator failure after prepare if configured
-        if self.failure_mode == 'coordinator_after_prepare' and not self.has_failed:
-            print(f"[{self.name}] COORDINATOR: Sending PREPARE to all participants")
-            prepare_success = self.send_prepare_to_participants(transaction_id, data)
-            
-            if prepare_success:
-                print(f"[{self.name}] COORDINATOR: All participants ready")
-                print(f"[{self.name}] COORDINATOR: Simulating coordinator failure...")
-                self.has_failed = True
-                self.simulate_failure()
-                # Save transaction state for recovery
-                self.save_transaction_state()
-                return None
 
         print(f"[{self.name}] COORDINATOR: Sending PREPARE to all participants")
         prepare_success = self.send_prepare_to_participants(transaction_id, data)
@@ -456,13 +443,26 @@ class Node:
         if prepare_success:
             print(f"[{self.name}] COORDINATOR: All participants ready, initiating COMMIT")
             commit_success = self.send_commit_to_participants(transaction_id)
+            
             if commit_success:
                 print(f"[{self.name}] COORDINATOR: Transaction committed successfully")
                 self.transaction_state['status'] = 'committed'
-                return {
+                
+                # Prepare success response before potential failure
+                response = {
                     'success': True,
                     'status': 'committed'
                 }
+                
+                # Check if we should simulate coordinator failure after commit
+                if self.failure_mode == 'coordinator_after_commit' and not self.has_failed:
+                    print(f"[{self.name}] COORDINATOR: Sending success response before simulated failure")
+                    # Create thread to simulate failure after response
+                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
+                    failure_thread.daemon = True
+                    failure_thread.start()
+                    
+                return response
             else:
                 print(f"[{self.name}] COORDINATOR: Commit failed")
                 self.transaction_state['status'] = 'failed'
@@ -487,11 +487,12 @@ class Node:
         """
         try:
             # First, check if we should simulate failure BEFORE prepare
-            if self.failure_mode == 'before_prepare' and not self.has_failed:
-                print(f"[{self.name}] Simulating failure before prepare...")
-                self.has_failed = True
-                self.simulate_failure()
-                return None  # Return None to simulate no response due to crash
+            if self.name == 'node2' and self.failure_mode:
+                if self.failure_mode == 'before_prepare' and not self.has_failed:
+                    print(f"[{self.name}] Simulating node2 failure before prepare...")
+                    self.has_failed = True
+                    self.simulate_failure()
+                    return None
                 
             # Normal prepare handling continues if no failure...
             if self.is_coordinator:
@@ -537,31 +538,24 @@ class Node:
                     'prepare_timestamp': time.time()
                 })
 
-                # Check if we should simulate failure AFTER prepare
-                if self.failure_mode == 'after_prepare' and not self.has_failed:
-                    print(f"[{self.name}] Sending READY response before simulated failure")
-                    response = {
-                        'success': True,
-                        'status': 'ready',
-                        'node': self.name,
-                        'transaction_id': transaction_id
-                    }
-                    # Add bonus amount to response if relevant
-                    if transaction_type == 'bonus' and self.account_name == 'A':
-                        response['bonus_amount'] = bonus_amount
-                    
-                    print(f"[{self.name}] Simulating failure after prepare...")
-                    self.simulate_failure()
-                    return response
-
-                print(f"[{self.name}] Sending READY response")
-                return {
+                # Prepare response before simulating failure
+                response = {
                     'success': True,
                     'status': 'ready',
                     'node': self.name,
                     'transaction_id': transaction_id,
                     'bonus_amount': bonus_amount if transaction_type == 'bonus' and self.account_name == 'A' else None
                 }
+
+                # Check if we should simulate failure AFTER prepare
+                if self.name == 'node2' and self.failure_mode == 'after_prepare' and not self.has_failed:
+                    print(f"[{self.name}] Node2 sending READY response before simulated failure")
+                    # Create a thread to simulate failure after response is sent
+                    failure_thread = threading.Thread(target=self.delayed_failure_simulation)
+                    failure_thread.daemon = True
+                    failure_thread.start()
+
+                return response
             else:
                 print(f"[{self.name}] Sending ABORT response")
                 return {
@@ -578,7 +572,13 @@ class Node:
                 'success': False,
                 'error': f'Internal error during prepare phase: {str(e)}'
             }
-    
+
+    def delayed_failure_simulation(self):
+        """Simulate failure after a short delay to allow response to be sent"""
+        time.sleep(0.1)  # Short delay to ensure response is sent
+        print(f"[{self.name}] Node2 simulating failure after prepare...")
+        self.has_failed = True
+        self.simulate_failure()
 
     def handle_commit(self, data):
         """
@@ -1078,31 +1078,6 @@ class Node:
             return None
         except Exception as e: 
             return None
-
-    def save_transaction_state(self):
-        """Save transaction state for recovery"""
-        state_file = f"transaction_state_{self.name}.json"
-        with open(state_file, 'w') as f:
-            json.dump(self.transaction_state, f)
-
-    def recover_transaction_state(self):
-        """Recover transaction state after failure"""
-        state_file = f"transaction_state_{self.name}.json"
-        if os.path.exists(state_file):
-            with open(state_file, 'r') as f:
-                self.transaction_state = json.load(f)
-            
-            # Check if transaction timed out during failure
-            if time.time() - self.transaction_state['start_time'] > 30:  # 30 sec timeout
-                self.send_abort_to_participants(self.transaction_state['transaction_id'])
-                self.transaction_state['status'] = 'aborted'
-            else:
-                # Resume transaction from saved state
-                if self.transaction_state['status'] == 'preparing':
-                    if len(self.transaction_state['participants_ready']) == len(NODES) - 1:
-                        self.send_commit_to_participants(self.transaction_state['transaction_id'])
-                    else:
-                        self.send_abort_to_participants(self.transaction_state['transaction_id'])
 
 
 """
