@@ -33,7 +33,7 @@ NODES = {
     # Account B cluster
     'node3-b1': {'ip': '10.128.0.6', 'port': 5003, 'role': 'primary-b', 'cluster': 'b'},
     'node3-b2': {'ip': '10.128.0.9', 'port': 5006, 'role': 'replica-b', 'cluster': 'b'},
-    'node3-b3': {'ip': '10.128.0.10', 'port': 5007, 'role': 'replica-b', 'cluster': 'b'}
+    'node3-b3': {'ip': '10.128.0.10', 'port': 5008, 'role': 'replica-b', 'cluster': 'b'}
 }
 
 
