@@ -176,22 +176,20 @@ class Node:
         return sync_success
 
     def handle_sync_balance(self, data):
-        """Handle balance sync request from primary"""
+        """Simplified sync handler - just accept and apply the new balance"""
         try:
             if not self.is_replica:
                 return {'success': False, 'error': 'Not a replica'}
-                
+            
             new_balance = data.get('balance')
             if new_balance is None:
                 return {'success': False, 'error': 'No balance provided'}
-                
+            
             print(f"[{self.name}] Updating balance to {new_balance} from primary")
             with open(self.account_file, 'w') as f:
                 f.write(str(new_balance))
             
-            self.last_sync_time = time.time()
             return {'success': True}
-            
         except Exception as e:
             print(f"[{self.name}] Error in sync balance: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -508,86 +506,64 @@ class Node:
         self.simulate_failure()
 
     def handle_commit(self, data):
-        """Modified commit handler to ensure correct order of operations"""
+        """Simplified commit handler - replicas just receive final balance"""
         try:
             transaction_id = data.get('transaction_id')
             print(f"\n[{self.name}] Received COMMIT for transaction {transaction_id}")
             
-            # Get the prepared transaction
             transaction = self.transaction_state.get('current_transaction')
-            if not transaction:
-                print(f"[{self.name}] Error: No transaction found")
-                return {'success': False, 'error': 'No transaction found'}
-            
             current_balance = self.get_balance()
-            print(f"[{self.name}] Current balance: {current_balance}")
             
-            # For replicas, wait briefly for primary to update first
-            if self.is_replica:
-                print(f"[{self.name}] Waiting for primary to update...")
-                time.sleep(0.5)  # Brief delay to ensure primary updates first
-                # Get fresh balance from primary
-                primary_node = self.get_primary_node()
+            if self.is_primary:
+                # Only primary calculates new balance
+                if transaction['type'] == 'transfer':
+                    if self.account_name == 'A':
+                        new_balance = current_balance - 100
+                        print(f"[{self.name}] Subtracting transfer amount of 100")
+                    else:
+                        new_balance = current_balance + 100
+                        print(f"[{self.name}] Adding transfer amount of 100")
+                else:  # bonus
+                    if self.account_name == 'A':
+                        bonus_amount = current_balance * 0.2
+                        new_balance = current_balance + bonus_amount
+                        print(f"[{self.name}] Adding bonus of {bonus_amount}")
+                    else:
+                        bonus_amount = transaction.get('bonus_amount', 0)
+                        new_balance = current_balance + bonus_amount
+                        print(f"[{self.name}] Adding bonus of {bonus_amount}")
+
+                # Update own balance and sync with replicas
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                
+                # Sync the final balance with replicas
+                print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
+                self.sync_with_replicas(new_balance)
+                
+            else:  # Replica
+                # Wait briefly for primary to update
+                time.sleep(0.5)
+                
+                # Get balance directly from primary
+                primary_node = next(name for name, info in NODES.items() 
+                                if info['role'] == f'primary-{self.cluster}')
+                
                 response = self.send_rpc(
                     NODES[primary_node]['ip'],
                     NODES[primary_node]['port'],
                     'GetBalance',
                     {}
                 )
-                if response and 'balance' in response:
-                    current_balance = response['balance']
-                    print(f"[{self.name}] Got updated balance from primary: {current_balance}")
-            
-            # Calculate new balance
-            if transaction['type'] == 'transfer':
-                if self.account_name == 'A':
-                    new_balance = current_balance - 100
-                    print(f"[{self.name}] Subtracting transfer amount of 100")
-                else:
-                    new_balance = current_balance + 100
-                    print(f"[{self.name}] Adding transfer amount of 100")
-            else:  # bonus
-                if self.account_name == 'A':
-                    bonus_amount = current_balance * 0.2
-                    new_balance = current_balance + bonus_amount
-                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
-                else:
-                    bonus_amount = transaction.get('bonus_amount', 0)
-                    new_balance = current_balance + bonus_amount
-                    print(f"[{self.name}] Adding bonus of {bonus_amount}")
-
-            # Update balance based on role
-            if self.is_primary:
-                # Primary updates itself and syncs with replicas
-                success = self.update_balance(new_balance)
-                if not success:
-                    return {'success': False, 'error': 'Failed to update and sync'}
-            else:
-                # Replicas verify with primary before updating
-                primary_node = self.get_primary_node()
-                verify_response = self.send_rpc(
-                    NODES[primary_node]['ip'],
-                    NODES[primary_node]['port'],
-                    'GetBalance',
-                    {}
-                )
                 
-                if verify_response and 'balance' in verify_response:
-                    expected_balance = verify_response['balance']
-                    if abs(expected_balance - new_balance) < 0.01:
-                        with open(self.account_file, 'w') as f:
-                            f.write(str(new_balance))
-                        print(f"[{self.name}] Verified and updated balance to {new_balance}")
-                    else:
-                        # If there's a mismatch, use primary's balance
-                        new_balance = expected_balance
-                        with open(self.account_file, 'w') as f:
-                            f.write(str(new_balance))
-                        print(f"[{self.name}] Using primary's balance: {new_balance}")
-                else:
-                    print(f"[{self.name}] Warning: Could not verify with primary")
+                if response and 'balance' in response:
+                    new_balance = response['balance']
+                    print(f"[{self.name}] Got updated balance from primary: {new_balance}")
                     with open(self.account_file, 'w') as f:
                         f.write(str(new_balance))
+                else:
+                    print(f"[{self.name}] Warning: Could not get balance from primary")
+                    return {'success': False, 'error': 'Could not get balance from primary'}
 
             self.transaction_state['status'] = 'committed'
             print(f"[{self.name}] Transaction committed. New balance: {new_balance}")
