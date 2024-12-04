@@ -1126,13 +1126,49 @@ class Node:
     in the cluster are requested to return their status.
     """
     def handle_get_status(self):
-        """Handle GetStatus RPC"""
+        """Handle GetStatus RPC with forced sync for replicas"""
+        # If this is a replica, sync with primary first
+        if self.is_replica:
+            try:
+                primary_node = next(name for name, info in NODES.items() 
+                            if info['role'] == f'primary-{self.cluster}')
+                
+                print(f"[{self.name}] Forcing sync with primary {primary_node} before status")
+                response = self.send_rpc(
+                    NODES[primary_node]['ip'],
+                    NODES[primary_node]['port'],
+                    'GetBalance',
+                    {}
+                )
+                
+                if response and 'balance' in response:
+                    primary_balance = response['balance']
+                    with open(self.account_file, 'w') as f:
+                        f.write(str(primary_balance))
+                    print(f"[{self.name}] Updated balance to {primary_balance} from primary")
+                else:
+                    print(f"[{self.name}] Could not sync with primary before status")
+            except Exception as e:
+                print(f"[{self.name}] Error syncing with primary: {str(e)}")
+
+        # Get current balance if this is a node with an account
+        balance = None
+        if self.account_file:
+            try:
+                with open(self.account_file, 'r') as f:
+                    balance = float(f.read().strip())
+            except Exception as e:
+                print(f"[{self.name}] Error reading balance: {str(e)}")
+
         return {
             'state': self.state,
             'term': self.current_term,
             'leader_name': self.leader_id,
             'is_leader': self.state == 'Leader',
-            'log_size': len(self.log)
+            'log_size': len(self.log),
+            'role': self.role,
+            'cluster': self.cluster if self.cluster else 'coordinator',
+            'balance': balance
         }
 
 
