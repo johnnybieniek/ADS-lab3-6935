@@ -285,8 +285,8 @@ class Node:
         if transaction_data['type'] == 'bonus':
             # First, get node A's response to calculate bonus
             node_a_response = self.send_rpc(
-                NODES['node2']['ip'],
-                NODES['node2']['port'],
+                NODES['node2a1']['ip'],
+                NODES['node2a1']['port'],
                 'Prepare',
                 prepare_data
             )
@@ -299,8 +299,8 @@ class Node:
                 
                 # Now send to node B with the bonus amount
                 node_b_response = self.send_rpc(
-                    NODES['node3']['ip'],
-                    NODES['node3']['port'],
+                    NODES['node3b1']['ip'],
+                    NODES['node3b1']['port'],
                     'Prepare',
                     prepare_data
                 )
@@ -392,16 +392,16 @@ class Node:
                 
                 # Send to node2 (Account A)
                 response_A = self.send_rpc(
-                    NODES['node2']['ip'],
-                    NODES['node2']['port'],
+                    NODES['node2a1']['ip'],
+                    NODES['node2a1']['port'],
                     'SetupScenario',
                     data
                 )
                 
                 # Send to node3 (Account B)
                 response_B = self.send_rpc(
-                    NODES['node3']['ip'],
-                    NODES['node3']['port'],
+                    NODES['node3b1']['ip'],
+                    NODES['node3b1']['port'],
                     'SetupScenario',
                     data
                 )
@@ -587,7 +587,7 @@ class Node:
         """
         try:
             # First, check if we should simulate failure BEFORE prepare
-            if self.name == 'node2' and self.failure_mode:
+            if self.name == 'node2a1' and self.failure_mode:
                 if self.failure_mode == 'before_prepare' and not self.has_failed:
                     print(f"[{self.name}] Simulating node2 failure before prepare...")
                     self.has_failed = True
