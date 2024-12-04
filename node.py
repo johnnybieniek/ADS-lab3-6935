@@ -306,8 +306,8 @@ class Node:
                 )
                 
                 if node_b_response and node_b_response.get('success'):
-                    self.transaction_state['participants_ready'].add('node2')
-                    self.transaction_state['participants_ready'].add('node3')
+                    self.transaction_state['participants_ready'].add('node2-a1')
+                    self.transaction_state['participants_ready'].add('node3-b1')
                     return True
         else:
             # Handle non-bonus transactions as before
@@ -648,7 +648,7 @@ class Node:
                 }
 
                 # Check if we should simulate failure AFTER prepare
-                if self.name == 'node2' and self.failure_mode == 'after_prepare' and not self.has_failed:
+                if self.name == 'node2-a1' and self.failure_mode == 'after_prepare' and not self.has_failed:
                     print(f"[{self.name}] Node2 sending READY response before simulated failure")
                     # Create a thread to simulate failure after response is sent
                     failure_thread = threading.Thread(target=self.delayed_failure_simulation)
