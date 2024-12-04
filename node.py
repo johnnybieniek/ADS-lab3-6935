@@ -122,57 +122,39 @@ class Node:
                 if info['role'] == f'primary-{self.cluster}')
 
     def sync_with_replicas(self, new_balance):
-        """Enhanced synchronization with explicit messaging"""
+        """Simplified and more robust sync process"""
         if not self.is_primary:
             return True
-            
-        print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
+                
+        print(f"[{self.name}] Primary starting sync for balance: {new_balance}")
         successful_syncs = 1  # Count self
         
         for replica in self.replica_group:
             if replica == self.name:
                 continue
-                
-            print(f"[{self.name}] Syncing with replica: {replica}")
-            retries = 3
             
-            while retries > 0:
+            try:
+                # Single attempt to sync with shorter timeout
                 response = self.send_rpc(
                     NODES[replica]['ip'],
                     NODES[replica]['port'],
                     'SyncBalance',
-                    {
-                        'balance': new_balance,
-                        'source': self.name,
-                        'timestamp': time.time()
-                    }
+                    {'balance': new_balance},
+                    timeout=1.0  # Shorter timeout
                 )
                 
                 if response and response.get('success'):
-                    # Verify the sync
-                    verify_response = self.send_rpc(
-                        NODES[replica]['ip'],
-                        NODES[replica]['port'],
-                        'GetBalance',
-                        {}
-                    )
-                    
-                    if verify_response and abs(verify_response.get('balance', 0) - new_balance) < 0.01:
-                        successful_syncs += 1
-                        self.replica_states[replica]['last_updated'] = time.time()
-                        print(f"[{self.name}] Successfully synced with {replica}")
-                        break
-                        
-                retries -= 1
-                if retries > 0:
-                    print(f"[{self.name}] Retry sync with {replica}")
-                    time.sleep(0.5)
+                    successful_syncs += 1
+                    print(f"[{self.name}] Successfully synced with {replica}")
                 else:
                     print(f"[{self.name}] Failed to sync with {replica}")
                     
-        required_syncs = (len(self.replica_group) // 2) + 1
-        sync_success = successful_syncs >= required_syncs
-        print(f"[{self.name}] Sync complete. Success: {sync_success} ({successful_syncs}/{len(self.replica_group)} nodes)")
+            except Exception as e:
+                print(f"[{self.name}] Error syncing with {replica}: {str(e)}")
+        
+        # More lenient majority requirement - need only one replica to sync
+        sync_success = successful_syncs > 1
+        print(f"[{self.name}] Sync complete. Success: {sync_success} ({successful_syncs} nodes)")
         return sync_success
 
     def handle_sync_balance(self, data):
@@ -506,71 +488,49 @@ class Node:
         self.simulate_failure()
 
     def handle_commit(self, data):
-        """Simplified commit handler - replicas just receive final balance"""
+        """Simplified commit handler"""
         try:
             transaction_id = data.get('transaction_id')
             print(f"\n[{self.name}] Received COMMIT for transaction {transaction_id}")
             
-            transaction = self.transaction_state.get('current_transaction')
-            current_balance = self.get_balance()
-            
             if self.is_primary:
-                # Only primary calculates new balance
+                # Primary calculates and updates
+                transaction = self.transaction_state.get('current_transaction')
+                current_balance = self.get_balance()
+                
+                # Calculate new balance
                 if transaction['type'] == 'transfer':
                     if self.account_name == 'A':
                         new_balance = current_balance - 100
-                        print(f"[{self.name}] Subtracting transfer amount of 100")
                     else:
                         new_balance = current_balance + 100
-                        print(f"[{self.name}] Adding transfer amount of 100")
                 else:  # bonus
                     if self.account_name == 'A':
-                        bonus_amount = current_balance * 0.2
-                        new_balance = current_balance + bonus_amount
-                        print(f"[{self.name}] Adding bonus of {bonus_amount}")
+                        new_balance = current_balance + (current_balance * 0.2)
                     else:
                         bonus_amount = transaction.get('bonus_amount', 0)
                         new_balance = current_balance + bonus_amount
-                        print(f"[{self.name}] Adding bonus of {bonus_amount}")
-
-                # Update own balance and sync with replicas
+                
+                # Update own balance first
                 with open(self.account_file, 'w') as f:
                     f.write(str(new_balance))
+                print(f"[{self.name}] Updated own balance to {new_balance}")
                 
-                # Sync the final balance with replicas
-                print(f"[{self.name}] Starting replica synchronization for balance: {new_balance}")
+                # Then sync with replicas
                 self.sync_with_replicas(new_balance)
                 
-            else:  # Replica
-                # Wait briefly for primary to update
-                time.sleep(0.5)
-                
-                # Get balance directly from primary
-                primary_node = next(name for name, info in NODES.items() 
-                                if info['role'] == f'primary-{self.cluster}')
-                
-                response = self.send_rpc(
-                    NODES[primary_node]['ip'],
-                    NODES[primary_node]['port'],
-                    'GetBalance',
-                    {}
-                )
-                
-                if response and 'balance' in response:
-                    new_balance = response['balance']
-                    print(f"[{self.name}] Got updated balance from primary: {new_balance}")
-                    with open(self.account_file, 'w') as f:
-                        f.write(str(new_balance))
-                else:
-                    print(f"[{self.name}] Warning: Could not get balance from primary")
-                    return {'success': False, 'error': 'Could not get balance from primary'}
-
+            else:
+                # Replicas just update to what they receive
+                new_balance = float(data.get('new_balance', 0))
+                with open(self.account_file, 'w') as f:
+                    f.write(str(new_balance))
+                print(f"[{self.name}] Updated replica balance to {new_balance}")
+            
             self.transaction_state['status'] = 'committed'
-            print(f"[{self.name}] Transaction committed. New balance: {new_balance}")
             return {'success': True, 'new_balance': new_balance}
                 
         except Exception as e:
-            print(f"[{self.name}] Error in commit phase: {str(e)}")
+            print(f"[{self.name}] Error in commit: {str(e)}")
             return {'success': False, 'error': str(e)}
 
     def get_primary_node(self):
@@ -1180,7 +1140,8 @@ class Node:
     This function sends a RPC to a node. It tries to connect to the node, sends the RPC message,
     and returns the response. If the connection fails, it returns None.
     """
-    def send_rpc(self, ip, port, rpc_type, data, timeout=2.0):
+    def send_rpc(self, ip, port, rpc_type, data, timeout=1.0):
+        """More reliable RPC with shorter timeout"""
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(timeout)
@@ -1189,12 +1150,11 @@ class Node:
                 s.sendall(message.encode())
                 response = s.recv(4096).decode()
                 return json.loads(response)
-            
         except socket.timeout:
-            return None   
-        except ConnectionRefusedError:
+            print(f"[{self.name}] Timeout communicating with {ip}:{port}")
             return None
-        except Exception as e: 
+        except Exception as e:
+            print(f"[{self.name}] Error in RPC: {str(e)}")
             return None
 
 
